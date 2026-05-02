@@ -26,17 +26,17 @@ const OPENROUTER_BASE =
  */
 export const SUNO_MODELS = {
   /** Zadkiel — lyrics, creative writing. */
-  lyrics: "tencent/hy3-preview:free",
+  lyrics: "minimax/minimax-m2.5:free",
   /** Uriel — Suno description text, structured + tag-heavy. */
-  soundPrompt: "tencent/hy3-preview:free",
+  soundPrompt: "minimax/minimax-m2.5:free",
   /** Jophiel — image gen prompt, vivid sensory detail. */
-  visualPrompt: "tencent/hy3-preview:free",
+  visualPrompt: "minimax/minimax-m2.5:free",
   /** Gabriel — release notes, social copy. */
-  releaseCopy: "tencent/hy3-preview:free",
+  releaseCopy: "minimax/minimax-m2.5:free",
 } as const;
 
 const FALLBACK_MODEL =
-  process.env.OPENROUTER_MODEL ?? "tencent/hy3-preview:free";
+  process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
