@@ -267,6 +267,13 @@
       "when": 1773756922363,
       "tag": "0037_friendly_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1777721256903,
+      "tag": "0038_white_gertrude_yorkes",
+      "breakpoints": true
     }
   ]
 }

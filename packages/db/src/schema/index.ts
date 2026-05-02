@@ -51,3 +51,13 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export {
+  sunoIssues,
+  SUNO_CHAKRAS,
+  SUNO_STATUSES,
+  SUNO_CHAKRA_FREQUENCIES,
+  type SunoChakra,
+  type SunoStatus,
+  type SunoIssue,
+  type NewSunoIssue,
+} from "./sunoIssues.js";
