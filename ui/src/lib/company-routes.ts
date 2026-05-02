@@ -1,4 +1,4 @@
-const BOARD_ROUTE_ROOTS = new Set([
+export const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
   "companies",
   "company",

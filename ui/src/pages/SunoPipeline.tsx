@@ -29,6 +29,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ChakraFrequencyMap } from "@/components/ChakraFrequencyMap";
+import { ArchangelAvatarStack } from "@/components/ArchangelAvatar";
+import { ChakraYantra, type ChakraKey } from "@/components/SacredGeometry";
 import { cn } from "@/lib/utils";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
@@ -37,6 +39,7 @@ import {
   SUNO_BOARD_COLUMNS,
   SUNO_CHAKRAS,
   SUNO_CHAKRA_FREQUENCIES,
+  type SunoAudioVariant,
   type SunoChakra,
   type SunoIssue,
   type SunoStatus,
@@ -140,7 +143,7 @@ export function SunoPipeline() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="suno-flower-backdrop flex flex-col gap-6 p-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -295,11 +298,38 @@ interface SunoCardProps {
 }
 
 function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
+  const queryClient = useQueryClient();
+
   const assigned = [
     issue.lyricsAgentId && agentNameById.get(issue.lyricsAgentId),
     issue.soundAgentId && agentNameById.get(issue.soundAgentId),
     issue.visualAgentId && agentNameById.get(issue.visualAgentId),
   ].filter(Boolean) as string[];
+
+  // Pulse the avatar ring when the archangel is actively working on this
+  // issue. GENERATING = all assigned pulse; REVIEW = Raphael (if present)
+  // pulses while gating. Other statuses = no pulse.
+  const workingNames =
+    issue.status === "GENERATING"
+      ? assigned
+      : issue.status === "REVIEW"
+        ? assigned.filter((n) => n === "Raphael")
+        : [];
+
+  const hasSuno = !!issue.audioUrl;
+  const hasMinimax = !!issue.minimaxAudioUrl;
+  const hasAB = hasSuno && hasMinimax;
+  const audioBadge = hasAB ? "♪ A+B" : hasSuno ? "♪ A" : hasMinimax ? "♪ B" : null;
+
+  const pickCanonMutation = useMutation({
+    mutationFn: (variant: SunoAudioVariant | null) => {
+      if (!issue.companyId) throw new Error("No company id on issue");
+      return sunoPipelineApi.pickCanon(issue.id, issue.companyId, variant);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: sunoQueryKey(issue.companyId) });
+    },
+  });
 
   return (
     <div className="rounded-md border bg-card p-2.5 space-y-1.5 hover:shadow-sm transition-shadow">
@@ -312,12 +342,12 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
             className="absolute inset-0 h-full w-full object-cover"
             loading="lazy"
           />
-          {issue.audioUrl && (
+          {audioBadge && (
             <span
               aria-label="audio attached"
               className="absolute right-1.5 top-1.5 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white backdrop-blur-sm"
             >
-              ♪ audio
+              {audioBadge}
             </span>
           )}
         </div>
@@ -326,7 +356,8 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
         {issue.concept}
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="text-[10px] uppercase tracking-wide rounded-sm border px-1.5 py-0.5 bg-muted/40">
+        <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide rounded-sm border px-1.5 py-0.5 bg-muted/40">
+          <ChakraYantra chakra={issue.targetChakra as ChakraKey} size={11} strokeWidth={2.5} />
           {issue.targetChakra} · {issue.targetFrequency}Hz
         </span>
         {issue.genre && (
@@ -336,19 +367,50 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
         )}
       </div>
       {assigned.length > 0 && (
-        <div className="text-[11px] text-muted-foreground truncate">
-          {assigned.join(" · ")}
+        <div className="flex items-center gap-2">
+          <ArchangelAvatarStack
+            names={assigned}
+            workingNames={workingNames}
+            size="xs"
+          />
+          <span className="text-[11px] text-muted-foreground truncate">
+            {assigned.join(" · ")}
+          </span>
         </div>
       )}
-      {/* Inline audio player when audioUrl is set — quick preview without leaving the kanban */}
-      {issue.audioUrl && (
-        <audio
-          src={issue.audioUrl}
-          controls
-          preload="none"
-          className="h-7 w-full"
-          style={{ colorScheme: "dark" }}
-        />
+      {/* A/B audio variants — Suno (A-side) + MiniMax (B-side). Click the
+          A or B chip to set the canonical winner; chip glows when picked. */}
+      {(hasSuno || hasMinimax) && (
+        <div className="space-y-1 pt-0.5">
+          {hasSuno && (
+            <AudioVariantRow
+              label="A"
+              source="Suno"
+              src={issue.audioUrl!}
+              isCanon={issue.canonAudioVariant === "suno"}
+              onPick={() =>
+                pickCanonMutation.mutate(
+                  issue.canonAudioVariant === "suno" ? null : "suno",
+                )
+              }
+              disabled={pickCanonMutation.isPending}
+            />
+          )}
+          {hasMinimax && (
+            <AudioVariantRow
+              label="B"
+              source="MiniMax"
+              src={issue.minimaxAudioUrl!}
+              isCanon={issue.canonAudioVariant === "minimax"}
+              onPick={() =>
+                pickCanonMutation.mutate(
+                  issue.canonAudioVariant === "minimax" ? null : "minimax",
+                )
+              }
+              disabled={pickCanonMutation.isPending}
+            />
+          )}
+        </div>
       )}
       <Select
         value={issue.status}
@@ -365,6 +427,53 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
           ))}
         </SelectContent>
       </Select>
+    </div>
+  );
+}
+
+interface AudioVariantRowProps {
+  /** "A" or "B" — display chip. */
+  label: string;
+  /** "Suno" or "MiniMax" — engine label shown on hover. */
+  source: string;
+  src: string;
+  isCanon: boolean;
+  onPick: () => void;
+  disabled: boolean;
+}
+
+function AudioVariantRow({
+  label,
+  source,
+  src,
+  isCanon,
+  onPick,
+  disabled,
+}: AudioVariantRowProps) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={onPick}
+        disabled={disabled}
+        title={isCanon ? `${source} (canon)` : `Pick ${source} as canon`}
+        className={cn(
+          "shrink-0 inline-flex items-center justify-center h-6 w-6 rounded text-[10px] font-bold uppercase border transition-colors",
+          isCanon
+            ? "bg-emerald-500/20 text-emerald-200 border-emerald-500/50 ring-1 ring-emerald-400/40"
+            : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/70 hover:text-foreground",
+          disabled && "opacity-50 cursor-not-allowed",
+        )}
+      >
+        {label}
+      </button>
+      <audio
+        src={src}
+        controls
+        preload="none"
+        className="h-6 flex-1 min-w-0"
+        style={{ colorScheme: "dark" }}
+      />
     </div>
   );
 }

@@ -54,6 +54,9 @@ export const SUNO_BOARD_COLUMNS = [
   "FAILED",
 ] as const;
 
+export const SUNO_AUDIO_VARIANTS = ["suno", "minimax"] as const;
+export type SunoAudioVariant = (typeof SUNO_AUDIO_VARIANTS)[number];
+
 export interface SunoIssue {
   id: string;
   companyId: string;
@@ -65,10 +68,20 @@ export interface SunoIssue {
   lyricsAgentId: string | null;
   soundAgentId: string | null;
   visualAgentId: string | null;
+  /** Suno A-side song id (browser/Raziel-driven). */
   sunoSongId: string | null;
+  /** Suno A-side audio URL. */
   audioUrl: string | null;
   thumbnailUrl: string | null;
   videoUrl: string | null;
+  /** MiniMax B-side song id (server-side). */
+  minimaxSongId: string | null;
+  /** MiniMax B-side audio URL. */
+  minimaxAudioUrl: string | null;
+  /** Latest MiniMax base_resp.status_code (0 = success). */
+  minimaxStatus: number | null;
+  /** Which variant is the canonical winner — null until Raphael picks. */
+  canonAudioVariant: SunoAudioVariant | null;
   status: SunoStatus;
   metadata: Record<string, unknown>;
   createdAt: string;
@@ -98,6 +111,10 @@ export interface UpdateSunoIssueInput {
   audioUrl?: string | null;
   thumbnailUrl?: string | null;
   videoUrl?: string | null;
+  minimaxSongId?: string | null;
+  minimaxAudioUrl?: string | null;
+  minimaxStatus?: number | null;
+  canonAudioVariant?: SunoAudioVariant | null;
   status?: SunoStatus;
   metadata?: Record<string, unknown>;
 }
@@ -278,6 +295,31 @@ export const sunoPipelineApi = {
       { companyId, ...input },
     ),
 
+  /**
+   * Standalone MiniMax dispatch — re-renders just the B-side without
+   * re-running the creative chain. Reads soundPrompt + lyrics from
+   * metadata.stages by default; pass overrides to swap them.
+   */
+  dispatchMinimax: (id: string, companyId: string, input: MinimaxMusicInput = {}) =>
+    api.post<SunoIssue>(
+      transitionEndpoint(id, "dispatch-minimax", companyId),
+      { companyId, ...input },
+    ),
+
+  /**
+   * Pick which audio variant is canonical (the winner Sandalphon publishes).
+   * Pass variant=null to clear the pick.
+   */
+  pickCanon: (
+    id: string,
+    companyId: string,
+    variant: SunoAudioVariant | null,
+  ) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "pick-canon", companyId), {
+      companyId,
+      variant,
+    }),
+
   // ── Cover art generation (Phase 8.5 — Jophiel renders the image) ────
   /**
    * Jophiel renders a cover image from metadata.stages.visualPrompt via
@@ -349,8 +391,14 @@ export interface MinimaxMusicInput {
 // ── Phase 9-A: Auto-run orchestrator ───────────────────────────────────────
 
 export interface AutoRunInput {
-  /** Music backend choice. "minimax" runs server-side. "skip" leaves audio unset. */
-  musicBackend?: "minimax" | "skip";
+  /**
+   * Music backend choice.
+   *   - "minimax"  — server-side MiniMax only (B-side rendered, A-side stays empty)
+   *   - "parallel" — option A A/B: MiniMax fires now + Suno dispatch flagged
+   *                  for Raziel browser automation (default)
+   *   - "skip"     — no music gen, both audio columns stay null
+   */
+  musicBackend?: "minimax" | "parallel" | "skip";
   /** Optional hints applied to ALL prompt builders. */
   hints?: Record<string, unknown>;
 }

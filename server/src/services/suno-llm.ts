@@ -138,6 +138,11 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
 // machine-friendly (no prose preambles, no markdown explanations).
 
 export function buildLyricsPrompt(ctx: SunoLlmContext): ChatMessage[] {
+  // Melody-first ordering: when ctx.soundPrompt is present (Uriel ran first),
+  // Zadkiel writes lyrics that respect the BPM, key, mood, and cadence Uriel
+  // described. When soundPrompt is absent, Zadkiel writes from the concept
+  // alone (back-compat for stand-alone lyric generation).
+  const hasSoundContext = !!ctx.soundPrompt && ctx.soundPrompt.length > 0;
   return [
     {
       role: "system",
@@ -149,7 +154,9 @@ Output contract:
 - 180–360 words total.
 - Style: poetic, layered, emotionally precise. Avoid cliche. Avoid AI tells.
 
-Embody the chakra's energy in the imagery and cadence. Match the genre's natural diction.`,
+${hasSoundContext
+  ? "Uriel has already designed the sonic palette. Match the BPM, mood, key, and cadence in the sonic brief. Phrasing should sit naturally on the implied rhythm. Imagery should match the sonic atmosphere."
+  : "Embody the chakra's energy in the imagery and cadence. Match the genre's natural diction."}`,
     },
     {
       role: "user",
@@ -157,6 +164,9 @@ Embody the chakra's energy in the imagery and cadence. Match the genre's natural
         `Concept: ${ctx.concept}`,
         `Target chakra: ${ctx.targetChakra} (${ctx.targetFrequency} Hz Solfeggio carrier)`,
         `Genre: ${ctx.genre ?? "open"}`,
+        hasSoundContext
+          ? `Sonic brief from Uriel (match BPM/cadence/mood):\n${ctx.soundPrompt!.slice(0, 1500)}`
+          : null,
         ctx.hints && Object.keys(ctx.hints).length > 0
           ? `Hints: ${JSON.stringify(ctx.hints)}`
           : null,

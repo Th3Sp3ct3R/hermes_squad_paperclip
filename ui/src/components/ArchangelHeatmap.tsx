@@ -10,13 +10,14 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { Crown, Stethoscope, MessageCircle, BookOpen, Flame, Image as ImageIcon, PenTool, Headphones, Download, Film, type LucideIcon } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { sunoPipelineApi } from "@/api/sunoPipeline";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { ArchangelAvatar } from "./ArchangelAvatar";
+import { type ArchangelName } from "./SacredGeometry";
 
-const ARCHANGEL_ORDER = [
+const ARCHANGEL_ORDER: ArchangelName[] = [
   "Michael",
   "Raphael",
   "Gabriel",
@@ -27,20 +28,7 @@ const ARCHANGEL_ORDER = [
   "Raziel",
   "Sandalphon",
   "Cassiel",
-] as const;
-
-const ARCHANGEL_ICON: Record<(typeof ARCHANGEL_ORDER)[number], LucideIcon> = {
-  Michael: Crown,
-  Raphael: Stethoscope,
-  Gabriel: MessageCircle,
-  Metatron: BookOpen,
-  Uriel: Flame,
-  Jophiel: ImageIcon,
-  Zadkiel: PenTool,
-  Raziel: Headphones,
-  Sandalphon: Download,
-  Cassiel: Film,
-};
+];
 
 interface ArchangelHeatmapProps {
   companyId: string;
@@ -98,7 +86,6 @@ export function ArchangelHeatmap({ companyId }: ArchangelHeatmapProps) {
       <div className="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-10 gap-2">
         {ARCHANGEL_ORDER.map((name, i) => {
           const agent = archangelRows[i];
-          const Icon = ARCHANGEL_ICON[name];
           const count = agent ? taskCounts.get(agent.id) ?? 0 : 0;
           const status = agent?.status ?? "missing";
           const tone = toneFor(status, count);
@@ -113,9 +100,14 @@ export function ArchangelHeatmap({ companyId }: ArchangelHeatmapProps) {
               data-task-count={count}
               data-status={status}
             >
-              <div className="flex items-center gap-1.5">
-                <Icon className="h-3.5 w-3.5 shrink-0" />
-                <span className="text-[11px] font-medium truncate">{name}</span>
+              <div className="flex flex-col items-center gap-1.5 text-center">
+                <ArchangelAvatar
+                  name={name}
+                  size="md"
+                  working={count > 0}
+                  geometryOnly={!agent}
+                />
+                <span className="text-[11px] font-medium truncate w-full">{name}</span>
               </div>
               <div className="mt-1.5 flex items-baseline justify-between">
                 <span className="text-[10px] uppercase tracking-wide opacity-70">

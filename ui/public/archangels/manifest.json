@@ -1,0 +1,117 @@
+{
+  "generatedAt": "2026-05-02T20:59:41.881Z",
+  "model": "google/gemini-2.5-flash-image",
+  "totalElapsedMs": 7337,
+  "archangels": {
+    "Metatron": {
+      "name": "Metatron",
+      "sphere": "Keter (Crown, Source)",
+      "geometry": "glowing Metatron's Cube — interlocking circles and lines forming the seed of all geometry",
+      "palette": "pure white, pearl, faint iridescence",
+      "avatarUrl": "/archangels/metatron.png",
+      "bytes": 1095352,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Michael": {
+      "name": "Michael",
+      "sphere": "Geburah (Mars, Severity)",
+      "geometry": "glowing pentagram",
+      "palette": "deep crimson, burnt copper, solar gold accents",
+      "avatarUrl": "/archangels/michael.png",
+      "bytes": 1059343,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Raphael": {
+      "name": "Raphael",
+      "sphere": "Tiphareth (Sun, Beauty)",
+      "geometry": "glowing hexagram (Solomon's seal)",
+      "palette": "warm gold, amber, sunlit honey",
+      "avatarUrl": "/archangels/raphael.png",
+      "bytes": 1141039,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Gabriel": {
+      "name": "Gabriel",
+      "sphere": "Yesod (Moon, Foundation)",
+      "geometry": "glowing nonagonal halo (nine-pointed)",
+      "palette": "lunar silver, twilight violet, midnight blue",
+      "avatarUrl": "/archangels/gabriel.png",
+      "bytes": 1028166,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Uriel": {
+      "name": "Uriel",
+      "sphere": "Netzach (Venus, Victory)",
+      "geometry": "glowing heptagram (seven-pointed star of Venus)",
+      "palette": "deep emerald, gold, soft green flame",
+      "avatarUrl": "/archangels/uriel.png",
+      "bytes": 976029,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Jophiel": {
+      "name": "Jophiel",
+      "sphere": "Chokmah (Wisdom)",
+      "geometry": "glowing Vesica Piscis — two intersecting circles forming a luminous almond",
+      "palette": "opal grey, starlight white, soft white-gold",
+      "avatarUrl": "/archangels/jophiel.png",
+      "bytes": 1462292,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Zadkiel": {
+      "name": "Zadkiel",
+      "sphere": "Chesed (Jupiter, Mercy)",
+      "geometry": "glowing hexagram inscribed inside a square",
+      "palette": "royal sapphire, deep indigo, gold",
+      "avatarUrl": "/archangels/zadkiel.png",
+      "bytes": 1236620,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Raziel": {
+      "name": "Raziel",
+      "sphere": "Chokmah (Mystery)",
+      "geometry": "glowing Sri Yantra — interlocking sacred triangles",
+      "palette": "misty grey, deep violet, starlight",
+      "avatarUrl": "/archangels/raziel.png",
+      "bytes": 1106148,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Sandalphon": {
+      "name": "Sandalphon",
+      "sphere": "Malkuth (Earth, Kingdom)",
+      "geometry": "glowing cube of manifestation",
+      "palette": "umber, ochre, deep forest green, terracotta",
+      "avatarUrl": "/archangels/sandalphon.png",
+      "bytes": 1041173,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    },
+    "Cassiel": {
+      "name": "Cassiel",
+      "sphere": "Binah (Saturn, Understanding)",
+      "geometry": "glowing heptagon as Saturnine seal, with faint orbital rings",
+      "palette": "deep black, slate silver, faint cold blue",
+      "avatarUrl": "/archangels/cassiel.png",
+      "bytes": 878795,
+      "mimeType": "image/png",
+      "renderedAt": "2026-05-02T20:59:41.881Z",
+      "model": "google/gemini-2.5-flash-image"
+    }
+  }
+}

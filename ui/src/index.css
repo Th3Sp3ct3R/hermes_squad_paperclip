@@ -726,3 +726,37 @@ a.paperclip-project-mention-chip {
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }
+
+/* ── Sacred geometry / archangel avatars ─────────────────────────────────── */
+
+/* Slow pulse on the geometry halo when an archangel is actively working. */
+@keyframes archangel-pulse {
+  0%, 100% {
+    opacity: 0.65;
+    filter: drop-shadow(0 0 2px currentColor);
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 8px currentColor);
+    transform: scale(1.04);
+  }
+}
+
+.archangel-pulse {
+  animation: archangel-pulse 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* Subtle Flower-of-Life backdrop for the Suno page (and any opt-in surface). */
+.suno-flower-backdrop {
+  background-image:
+    radial-gradient(circle at 50% 50%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px),
+    radial-gradient(circle at 0% 50%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px),
+    radial-gradient(circle at 100% 50%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px),
+    radial-gradient(circle at 25% 6.7%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px),
+    radial-gradient(circle at 75% 6.7%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px),
+    radial-gradient(circle at 25% 93.3%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px),
+    radial-gradient(circle at 75% 93.3%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px);
+  background-size: 60px 60px;
+}

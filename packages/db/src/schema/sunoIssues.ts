@@ -56,6 +56,10 @@ export const SUNO_STATUSES = [
 ] as const;
 export type SunoStatus = (typeof SUNO_STATUSES)[number];
 
+/** Audio variants the issue can hold — A-side Suno + B-side MiniMax. */
+export const SUNO_AUDIO_VARIANTS = ["suno", "minimax"] as const;
+export type SunoAudioVariant = (typeof SUNO_AUDIO_VARIANTS)[number];
+
 export const sunoIssues = pgTable(
   "suno_issues",
   {
@@ -88,9 +92,30 @@ export const sunoIssues = pgTable(
 
     /** Suno's song ID (populated post-generation). */
     sunoSongId: text("suno_song_id"),
+    /** Suno-generated audio URL — A-side variant when running A/B. */
     audioUrl: text("audio_url"),
+    /** Thumbnail/cover URL — Suno auto-generates, Jophiel can override. */
     thumbnailUrl: text("thumbnail_url"),
+    /** Music video URL (Cassiel — late stage). */
     videoUrl: text("video_url"),
+
+    /**
+     * MiniMax B-side variant. When auto-run dispatches in option-A parallel
+     * mode, both Suno and MiniMax render the same song concept. The two
+     * audio outputs sit side-by-side; the human (or Raphael) picks the
+     * winner via canonAudioVariant.
+     */
+    minimaxSongId: text("minimax_song_id"),
+    minimaxAudioUrl: text("minimax_audio_url"),
+    /** Latest MiniMax base_resp.status_code or null when not yet dispatched. */
+    minimaxStatus: integer("minimax_status"),
+
+    /**
+     * Which variant is the canonical winner — 'suno' | 'minimax' | null.
+     * Sandalphon publishes whichever audioUrl this points at. Null until
+     * Raphael / human picks during REVIEW.
+     */
+    canonAudioVariant: text("canon_audio_variant"),
 
     /** One of SUNO_STATUSES. Defaults to DRAFT. */
     status: text("status").notNull().default("DRAFT"),
