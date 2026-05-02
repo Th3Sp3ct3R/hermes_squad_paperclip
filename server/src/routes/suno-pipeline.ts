@@ -1,28 +1,46 @@
 /**
- * Suno pipeline routes — CRUD for the autonomous music production pipeline.
+ * Suno pipeline routes — full state machine for the autonomous music production
+ * pipeline.
  *
+ * CRUD:
  *   GET    /api/suno-pipeline?companyId=...        list issues for a company
  *   POST   /api/suno-pipeline                      create a new pipeline issue
- *   PATCH  /api/suno-pipeline/:id?companyId=...    update status / URLs / agent assignments
+ *   PATCH  /api/suno-pipeline/:id?companyId=...    raw update (manual override)
  *
- * All routes are company-scoped via assertCompanyAccess. Mutations are
- * logged through the standard activity-log pipeline so they show up in
- * the dashboard activity feed and live-event stream.
+ * State machine (Phase 7):
+ *   POST   /api/suno-pipeline/:id/assign           Michael sets the 3 creative agents
+ *   POST   /api/suno-pipeline/:id/deposit          Any agent attaches work output
+ *   POST   /api/suno-pipeline/:id/dispatch         Michael: DRAFT → GENERATING
+ *   POST   /api/suno-pipeline/:id/request-review   Creative agent: GENERATING → REVIEW
+ *   POST   /api/suno-pipeline/:id/approve          Raphael: REVIEW → APPROVED
+ *   POST   /api/suno-pipeline/:id/reject           Raphael: REVIEW → GENERATING + feedback
+ *   POST   /api/suno-pipeline/:id/publish          Sandalphon: APPROVED → PUBLISHED
+ *   POST   /api/suno-pipeline/:id/fail             Any agent: any → FAILED
+ *   GET    /api/suno-pipeline/:id/timeline         Read activity log for this song
+ *
+ * All routes are company-scoped via assertCompanyAccess. Mutations are logged
+ * through the standard activity-log pipeline so they show up in the dashboard
+ * activity feed and live-event stream.
  */
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   sunoIssues,
+  agents as agentsTable,
+  activityLog,
   SUNO_CHAKRAS,
   SUNO_STATUSES,
   SUNO_CHAKRA_FREQUENCIES,
+  type SunoStatus,
 } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
+
+// ── Schemas ────────────────────────────────────────────────────────────────
 
 const chakraSchema = z.enum(SUNO_CHAKRAS);
 const statusSchema = z.enum(SUNO_STATUSES);
@@ -64,6 +82,53 @@ const updateSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
+// Phase 7 schemas
+
+const assignSchema = z.object({
+  companyId: z.string().uuid(),
+  lyricsAgentId: z.string().uuid(),
+  soundAgentId: z.string().uuid(),
+  visualAgentId: z.string().uuid(),
+});
+
+const depositStages = [
+  "lyrics",
+  "soundPrompt",
+  "visualPrompt",
+  "releaseCopy",
+  "audioUrl",
+  "thumbnailUrl",
+  "videoUrl",
+  "sunoSongId",
+  "variants",
+  "note",
+] as const;
+
+const depositSchema = z.object({
+  companyId: z.string().uuid(),
+  stage: z.enum(depositStages),
+  /** Free-form output — string, url, structured object — depending on stage. */
+  output: z.union([z.string(), z.number(), z.boolean(), z.array(z.unknown()), z.record(z.unknown())]),
+});
+
+const transitionSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Optional human-readable note attached to the transition. */
+  note: z.string().max(2000).optional(),
+});
+
+const rejectSchema = z.object({
+  companyId: z.string().uuid(),
+  feedback: z.string().min(1).max(2000),
+});
+
+const failSchema = z.object({
+  companyId: z.string().uuid(),
+  reason: z.string().min(1).max(2000),
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
 function resolveCompanyId(req: {
   query: Record<string, unknown>;
   body?: Record<string, unknown> | null;
@@ -81,8 +146,82 @@ function resolveCompanyId(req: {
   return companyId;
 }
 
+function paramId(req: { params: Record<string, unknown> }): string {
+  const raw = req.params.id;
+  if (typeof raw !== "string" || !raw) {
+    throw badRequest("id is required");
+  }
+  return raw;
+}
+
+interface HistoryEntry {
+  stage: string;
+  output: unknown;
+  at: string;
+  actorType: string;
+  actorId: string;
+  agentId: string | null;
+  agentName: string | null;
+  status: SunoStatus;
+}
+
+function appendHistory(
+  metadata: Record<string, unknown> | null | undefined,
+  entry: HistoryEntry,
+): Record<string, unknown> {
+  const current = (metadata && typeof metadata === "object" ? metadata : {}) as Record<
+    string,
+    unknown
+  >;
+  const history = Array.isArray(current.history) ? [...(current.history as unknown[])] : [];
+  history.push(entry as unknown);
+  return { ...current, history };
+}
+
+/**
+ * Look up the calling agent's name when the actor is an agent. Used to enforce
+ * role-locked transitions (Raphael for approve/reject, Sandalphon for publish).
+ * Returns null when the actor is a board user (their permissions are checked
+ * separately by assertCompanyAccess).
+ */
+async function resolveActorAgentName(db: Db, req: Request): Promise<string | null> {
+  if (req.actor.type !== "agent" || !req.actor.agentId) return null;
+  const [row] = await db
+    .select({ name: agentsTable.name })
+    .from(agentsTable)
+    .where(eq(agentsTable.id, req.actor.agentId))
+    .limit(1);
+  return row?.name ?? null;
+}
+
+/** Validate a state transition; throws 422 if not allowed. */
+function assertTransition(from: SunoStatus, to: SunoStatus, allowed: SunoStatus[]): void {
+  if (!allowed.includes(from)) {
+    throw unprocessable(
+      `Invalid transition: cannot ${to} from ${from} (allowed sources: ${allowed.join(", ")})`,
+    );
+  }
+}
+
+// ── Route factory ──────────────────────────────────────────────────────────
+
 export function sunoPipelineRoutes(db: Db) {
   const router = Router();
+
+  /** Load + ownership-check a song. Throws 404 if not found. */
+  async function loadIssueOrThrow(id: string, companyId: string) {
+    const [row] = await db
+      .select()
+      .from(sunoIssues)
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)))
+      .limit(1);
+    if (!row) throw notFound("Suno issue not found");
+    return row;
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   CRUD
+  // ────────────────────────────────────────────────────────────────────────
 
   // ── GET /suno-pipeline ────────────────────────────────────────────────────
   router.get("/suno-pipeline", async (req, res) => {
@@ -94,7 +233,7 @@ export function sunoPipelineRoutes(db: Db) {
         .select()
         .from(sunoIssues)
         .where(eq(sunoIssues.companyId, companyId))
-        .orderBy(desc(sunoIssues.createdAt));
+        .orderBy(asc(sunoIssues.createdAt));
 
       res.json(rows);
     } catch (err) {
@@ -153,24 +292,12 @@ export function sunoPipelineRoutes(db: Db) {
 
   // ── PATCH /suno-pipeline/:id ──────────────────────────────────────────────
   router.patch("/suno-pipeline/:id", validate(updateSchema), async (req, res) => {
-    const rawId = req.params.id;
-    // Express's `req.params[key]` is typed as `string | string[]` under strict
-    // settings; narrow before passing to Drizzle's eq().
-    if (typeof rawId !== "string" || !rawId) {
-      throw badRequest("id is required");
-    }
-    const id: string = rawId;
-
+    const id = paramId(req);
     const body = req.body as z.infer<typeof updateSchema>;
     const companyId = resolveCompanyId(req);
     assertCompanyAccess(req, companyId);
 
-    const [existing] = await db
-      .select()
-      .from(sunoIssues)
-      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)))
-      .limit(1);
-    if (!existing) throw notFound("Suno issue not found");
+    const existing = await loadIssueOrThrow(id, companyId);
 
     // Build a delta of just the fields the caller actually sent.
     const patch: Partial<typeof sunoIssues.$inferInsert> = {
@@ -221,6 +348,465 @@ export function sunoPipelineRoutes(db: Db) {
     });
 
     res.json(row);
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   STATE MACHINE (Phase 7)
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── POST /:id/assign ──────────────────────────────────────────────────────
+  // Michael sets the three creative agents. Pre-condition: status === DRAFT.
+  router.post("/suno-pipeline/:id/assign", validate(assignSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof assignSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (existing.status !== "DRAFT") {
+      throw unprocessable(
+        `Cannot assign agents on a ${existing.status} issue; only DRAFT issues accept assignments.`,
+      );
+    }
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({
+        lyricsAgentId: body.lyricsAgentId,
+        soundAgentId: body.soundAgentId,
+        visualAgentId: body.visualAgentId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.assigned",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        lyricsAgentId: body.lyricsAgentId,
+        soundAgentId: body.soundAgentId,
+        visualAgentId: body.visualAgentId,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/deposit ─────────────────────────────────────────────────────
+  // Any creative agent attaches a stage output (lyrics / soundPrompt /
+  // visualPrompt / releaseCopy / audioUrl / thumbnailUrl / videoUrl /
+  // sunoSongId / variants / note). Versioned trail in metadata.history[].
+  router.post("/suno-pipeline/:id/deposit", validate(depositSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof depositSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (existing.status === "PUBLISHED" || existing.status === "FAILED") {
+      throw unprocessable(
+        `Cannot deposit on a ${existing.status} issue (terminal state).`,
+      );
+    }
+
+    const actor = getActorInfo(req);
+    const agentName = await resolveActorAgentName(db, req);
+
+    // Snapshot top-level fields when the deposit aliases one (audioUrl,
+    // thumbnailUrl, videoUrl, sunoSongId). Other stages live only in metadata.
+    const topLevelPatch: Partial<typeof sunoIssues.$inferInsert> = { updatedAt: new Date() };
+    if (body.stage === "audioUrl" && typeof body.output === "string") {
+      topLevelPatch.audioUrl = body.output;
+    } else if (body.stage === "thumbnailUrl" && typeof body.output === "string") {
+      topLevelPatch.thumbnailUrl = body.output;
+    } else if (body.stage === "videoUrl" && typeof body.output === "string") {
+      topLevelPatch.videoUrl = body.output;
+    } else if (body.stage === "sunoSongId" && typeof body.output === "string") {
+      topLevelPatch.sunoSongId = body.output;
+    }
+
+    // Build the new metadata with appended history + a per-stage cache so
+    // readers don't have to walk history to find the current value.
+    const currentMeta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const stageCache = (currentMeta.stages && typeof currentMeta.stages === "object"
+      ? { ...(currentMeta.stages as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    stageCache[body.stage] = body.output;
+
+    const nextMeta = appendHistory(
+      { ...currentMeta, stages: stageCache },
+      {
+        stage: body.stage,
+        output: body.output,
+        at: new Date().toISOString(),
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        agentName,
+        status: existing.status as SunoStatus,
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ ...topLevelPatch, metadata: nextMeta })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.deposited",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        stage: body.stage,
+        agentName,
+        // Don't redact lyrics/prompts in the activity log details — those
+        // ARE the work product. logActivity's sanitizer handles secrets.
+        outputType: typeof body.output,
+        outputSize: typeof body.output === "string" ? body.output.length : undefined,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/dispatch ────────────────────────────────────────────────────
+  // Michael moves DRAFT → GENERATING. Validates all three creative agents
+  // are assigned.
+  router.post("/suno-pipeline/:id/dispatch", validate(transitionSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof transitionSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "GENERATING", ["DRAFT"]);
+
+    const missing: string[] = [];
+    if (!existing.lyricsAgentId) missing.push("lyricsAgentId");
+    if (!existing.soundAgentId) missing.push("soundAgentId");
+    if (!existing.visualAgentId) missing.push("visualAgentId");
+    if (missing.length > 0) {
+      throw unprocessable(
+        `Cannot dispatch: missing assignment(s) ${missing.join(", ")}. Call /assign first.`,
+      );
+    }
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "GENERATING", updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.dispatched",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/request-review ──────────────────────────────────────────────
+  // Any creative agent moves GENERATING → REVIEW after depositing all required
+  // outputs. Per Phase 7 decisions: ALL THREE creative outputs required
+  // (lyrics + soundPrompt + visualPrompt) plus an audioUrl.
+  router.post(
+    "/suno-pipeline/:id/request-review",
+    validate(transitionSchema),
+    async (req, res) => {
+      const id = paramId(req);
+      const body = req.body as z.infer<typeof transitionSchema>;
+      assertCompanyAccess(req, body.companyId);
+
+      const existing = await loadIssueOrThrow(id, body.companyId);
+      assertTransition(existing.status as SunoStatus, "REVIEW", ["GENERATING"]);
+
+      const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+
+      const missing: string[] = [];
+      if (!stages.lyrics) missing.push("lyrics");
+      if (!stages.soundPrompt) missing.push("soundPrompt");
+      if (!stages.visualPrompt) missing.push("visualPrompt");
+      if (!existing.audioUrl) missing.push("audioUrl");
+      if (missing.length > 0) {
+        throw unprocessable(
+          `Cannot request review: missing ${missing.join(", ")}. Deposit them first.`,
+        );
+      }
+
+      const [row] = await db
+        .update(sunoIssues)
+        .set({ status: "REVIEW", updatedAt: new Date() })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!row) throw notFound("Suno issue not found");
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.review_requested",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+      });
+
+      res.json(row);
+    },
+  );
+
+  // ── POST /:id/approve ─────────────────────────────────────────────────────
+  // Raphael moves REVIEW → APPROVED. Locked to Raphael by agent name when
+  // the actor is an agent; board users (humans) bypass the role check —
+  // they're authorized via standard company-access permissions.
+  router.post("/suno-pipeline/:id/approve", validate(transitionSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof transitionSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const agentName = await resolveActorAgentName(db, req);
+    if (req.actor.type === "agent" && agentName !== "Raphael") {
+      throw forbidden(
+        `Only Raphael can approve Suno issues (calling agent: ${agentName ?? "unknown"})`,
+      );
+    }
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "APPROVED", ["REVIEW"]);
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "APPROVED", updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.approved",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/reject ──────────────────────────────────────────────────────
+  // Raphael moves REVIEW → GENERATING with feedback. Bumps metadata.iteration
+  // so we can show the rep counter in the UI.
+  router.post("/suno-pipeline/:id/reject", validate(rejectSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof rejectSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const agentName = await resolveActorAgentName(db, req);
+    if (req.actor.type === "agent" && agentName !== "Raphael") {
+      throw forbidden(
+        `Only Raphael can reject Suno issues (calling agent: ${agentName ?? "unknown"})`,
+      );
+    }
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "GENERATING", ["REVIEW"]);
+
+    const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const iteration = typeof meta.iteration === "number" ? meta.iteration + 1 : 1;
+    const actor = getActorInfo(req);
+    const nextMeta = appendHistory(
+      { ...meta, iteration, lastRejectFeedback: body.feedback },
+      {
+        stage: "reject",
+        output: body.feedback,
+        at: new Date().toISOString(),
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        agentName,
+        status: "GENERATING",
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "GENERATING", metadata: nextMeta, updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.rejected",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        previousStatus: existing.status,
+        newStatus: row.status,
+        iteration,
+        feedback: body.feedback,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/publish ─────────────────────────────────────────────────────
+  // Sandalphon moves APPROVED → PUBLISHED. Locked to Sandalphon by agent name.
+  router.post("/suno-pipeline/:id/publish", validate(transitionSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof transitionSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const agentName = await resolveActorAgentName(db, req);
+    if (req.actor.type === "agent" && agentName !== "Sandalphon") {
+      throw forbidden(
+        `Only Sandalphon can publish Suno issues (calling agent: ${agentName ?? "unknown"})`,
+      );
+    }
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "PUBLISHED", ["APPROVED"]);
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "PUBLISHED", updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.published",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/fail ────────────────────────────────────────────────────────
+  // Any agent can move any non-terminal status to FAILED with a reason.
+  router.post("/suno-pipeline/:id/fail", validate(failSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof failSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (existing.status === "PUBLISHED" || existing.status === "FAILED") {
+      throw unprocessable(
+        `Issue is already in terminal state ${existing.status}.`,
+      );
+    }
+
+    const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const actor = getActorInfo(req);
+    const agentName = await resolveActorAgentName(db, req);
+    const nextMeta = appendHistory(
+      { ...meta, lastFailureReason: body.reason },
+      {
+        stage: "fail",
+        output: body.reason,
+        at: new Date().toISOString(),
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        agentName,
+        status: "FAILED",
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "FAILED", metadata: nextMeta, updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.failed",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        previousStatus: existing.status,
+        newStatus: row.status,
+        reason: body.reason,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── GET /:id/timeline ─────────────────────────────────────────────────────
+  // Read activity-log rows scoped to this song, ascending by time. Useful
+  // for the song detail page and Metatron's records.
+  router.get("/suno-pipeline/:id/timeline", async (req, res) => {
+    const id = paramId(req);
+    const companyId = resolveCompanyId(req);
+    assertCompanyAccess(req, companyId);
+
+    // Confirm ownership before exposing activity rows.
+    await loadIssueOrThrow(id, companyId);
+
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "suno_issue"),
+          eq(activityLog.entityId, id),
+        ),
+      )
+      .orderBy(asc(activityLog.createdAt));
+
+    res.json(rows);
   });
 
   return router;

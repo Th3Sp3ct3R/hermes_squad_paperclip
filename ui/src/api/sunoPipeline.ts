@@ -111,7 +111,70 @@ function withQuery(path: string, params: Record<string, string | undefined>) {
   return `${path}?${search}`;
 }
 
+// ── State machine input shapes (Phase 7) ───────────────────────────────────
+
+export interface AssignInput {
+  lyricsAgentId: string;
+  soundAgentId: string;
+  visualAgentId: string;
+}
+
+export const SUNO_DEPOSIT_STAGES = [
+  "lyrics",
+  "soundPrompt",
+  "visualPrompt",
+  "releaseCopy",
+  "audioUrl",
+  "thumbnailUrl",
+  "videoUrl",
+  "sunoSongId",
+  "variants",
+  "note",
+] as const;
+export type SunoDepositStage = (typeof SUNO_DEPOSIT_STAGES)[number];
+
+export interface DepositInput {
+  stage: SunoDepositStage;
+  /**
+   * The work product. URL strings for *Url stages, free-form for lyrics/prompts,
+   * structured object for `variants`. Server validates by stage at runtime.
+   */
+  output: string | number | boolean | unknown[] | Record<string, unknown>;
+}
+
+export interface TransitionInput {
+  /** Optional human-readable note attached to the transition. */
+  note?: string;
+}
+
+export interface RejectInput {
+  feedback: string;
+}
+
+export interface FailInput {
+  reason: string;
+}
+
+/** A row from the activity log scoped to a single Suno issue. */
+export interface SunoTimelineEvent {
+  id: string;
+  companyId: string;
+  actorType: string;
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+const transitionEndpoint = (id: string, verb: string, companyId: string) =>
+  withQuery(`/suno-pipeline/${encodeURIComponent(id)}/${verb}`, { companyId });
+
 export const sunoPipelineApi = {
+  // ── CRUD ────────────────────────────────────────────────────────────────
   list: (companyId: string) =>
     api.get<SunoIssue[]>(withQuery("/suno-pipeline", { companyId })),
   create: (companyId: string, input: CreateSunoIssueInput) =>
@@ -120,5 +183,60 @@ export const sunoPipelineApi = {
     api.patch<SunoIssue>(
       withQuery(`/suno-pipeline/${encodeURIComponent(id)}`, { companyId }),
       { companyId, ...input },
+    ),
+
+  // ── State machine (Phase 7) ─────────────────────────────────────────────
+  /** Michael assigns the three creative agents. Pre: status === DRAFT. */
+  assign: (id: string, companyId: string, input: AssignInput) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "assign", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Any creative agent attaches a stage output. Versioned in metadata.history[]. */
+  deposit: (id: string, companyId: string, input: DepositInput) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "deposit", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Michael: DRAFT → GENERATING. Validates all 3 agents are assigned. */
+  dispatch: (id: string, companyId: string, input: TransitionInput = {}) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "dispatch", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Creative agent: GENERATING → REVIEW. Validates required outputs exist. */
+  requestReview: (id: string, companyId: string, input: TransitionInput = {}) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "request-review", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Raphael: REVIEW → APPROVED. */
+  approve: (id: string, companyId: string, input: TransitionInput = {}) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "approve", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Raphael: REVIEW → GENERATING with feedback. Bumps metadata.iteration. */
+  reject: (id: string, companyId: string, input: RejectInput) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "reject", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Sandalphon: APPROVED → PUBLISHED. */
+  publish: (id: string, companyId: string, input: TransitionInput = {}) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "publish", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Any agent: any non-terminal → FAILED with reason. */
+  fail: (id: string, companyId: string, input: FailInput) =>
+    api.post<SunoIssue>(transitionEndpoint(id, "fail", companyId), {
+      companyId,
+      ...input,
+    }),
+  /** Read activity-log rows for this song (used by detail page + Metatron). */
+  timeline: (id: string, companyId: string) =>
+    api.get<SunoTimelineEvent[]>(
+      withQuery(`/suno-pipeline/${encodeURIComponent(id)}/timeline`, { companyId }),
     ),
 };
