@@ -265,6 +265,34 @@ export const sunoPipelineApi = {
       transitionEndpoint(id, "generate/release-copy", companyId),
       { companyId, ...input },
     ),
+
+  // ── Music generation (Phase 10 — MiniMax music-2.6-free) ──────────────
+  /** Server-side music generation via MiniMax. Defaults to music-2.6-free. */
+  generateSongViaMinimax: (
+    id: string,
+    companyId: string,
+    input: MinimaxMusicInput = {},
+  ) =>
+    api.post<SunoIssue>(
+      transitionEndpoint(id, "generate/song-via-minimax", companyId),
+      { companyId, ...input },
+    ),
+
+  // ── Autonomous orchestrator (Phase 9-A) ───────────────────────────────
+  /**
+   * End-to-end autonomous run. Auto-assigns archangels by name, dispatches,
+   * runs the full creative chain (lyrics → soundPrompt → visualPrompt →
+   * music → releaseCopy), then transitions to REVIEW.
+   *
+   * Synchronous — returns ~30–60s after invocation. UI should show a
+   * spinner during the call. The returned `missingStages` field is empty
+   * when the issue successfully reached REVIEW.
+   */
+  autoRun: (id: string, companyId: string, input: AutoRunInput = {}) =>
+    api.post<AutoRunResult>(transitionEndpoint(id, "auto-run", companyId), {
+      companyId,
+      ...input,
+    }),
 };
 
 // ── Phase 8 generation input ───────────────────────────────────────────────
@@ -274,4 +302,33 @@ export interface GenerateInput {
   model?: string;
   /** Optional hints injected into the prompt (mood, BPM, brand voice, etc.). */
   hints?: Record<string, unknown>;
+}
+
+// ── Phase 10: MiniMax music ────────────────────────────────────────────────
+
+export interface MinimaxMusicInput {
+  /** Defaults to music-2.6-free (free tier). */
+  model?: "music-2.6-free" | "music-2.6" | "music-cover-free" | "music-cover" | string;
+  /** Override the prompt that goes into MiniMax (defaults to metadata.stages.soundPrompt). */
+  prompt?: string;
+  /** Override the lyrics (defaults to metadata.stages.lyrics). */
+  lyrics?: string;
+  /** Generate an instrumental track. */
+  isInstrumental?: boolean;
+}
+
+// ── Phase 9-A: Auto-run orchestrator ───────────────────────────────────────
+
+export interface AutoRunInput {
+  /** Music backend choice. "minimax" runs server-side. "skip" leaves audio unset. */
+  musicBackend?: "minimax" | "skip";
+  /** Optional hints applied to ALL prompt builders. */
+  hints?: Record<string, unknown>;
+}
+
+export interface AutoRunResult {
+  issue: SunoIssue;
+  readyForReview: boolean;
+  /** When readyForReview is false, lists which deposits are still missing. */
+  missingStages: string[];
 }

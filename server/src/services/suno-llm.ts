@@ -20,21 +20,23 @@ const OPENROUTER_BASE =
 /**
  * Per-archangel default model. All :free for now per The Architect's directive.
  * Tunable per call via the {@link callOpenRouter} `model` option, and the
- * fallback can be overridden at process scope via OPENROUTER_MODEL.
+ * fallback can be overridden at process scope via OPENROUTER_MODEL. Per-agent
+ * overrides come from `agents.runtimeConfig.model` (see runGenerate in the
+ * suno-pipeline route).
  */
 export const SUNO_MODELS = {
-  /** Zadkiel — lyrics, creative writing. Larger model for poetic depth. */
-  lyrics: "meta-llama/llama-3.3-70b-instruct:free",
-  /** Uriel — Suno description text, structured + tag-heavy. Smaller is fine. */
-  soundPrompt: "meta-llama/llama-3.3-70b-instruct:free",
+  /** Zadkiel — lyrics, creative writing. */
+  lyrics: "tencent/hy3-preview:free",
+  /** Uriel — Suno description text, structured + tag-heavy. */
+  soundPrompt: "tencent/hy3-preview:free",
   /** Jophiel — image gen prompt, vivid sensory detail. */
-  visualPrompt: "meta-llama/llama-3.3-70b-instruct:free",
-  /** Gabriel — release notes, social copy. Voice-y and tight. */
-  releaseCopy: "meta-llama/llama-3.3-70b-instruct:free",
+  visualPrompt: "tencent/hy3-preview:free",
+  /** Gabriel — release notes, social copy. */
+  releaseCopy: "tencent/hy3-preview:free",
 } as const;
 
 const FALLBACK_MODEL =
-  process.env.OPENROUTER_MODEL ?? "meta-llama/llama-3.3-70b-instruct:free";
+  process.env.OPENROUTER_MODEL ?? "tencent/hy3-preview:free";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
