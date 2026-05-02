@@ -239,4 +239,39 @@ export const sunoPipelineApi = {
     api.get<SunoTimelineEvent[]>(
       withQuery(`/suno-pipeline/${encodeURIComponent(id)}/timeline`, { companyId }),
     ),
+
+  // ── AI generation hooks (Phase 8 — OpenRouter) ────────────────────────
+  /** Zadkiel: write lyrics from concept + chakra. Result lands in metadata.stages.lyrics. */
+  generateLyrics: (id: string, companyId: string, input: GenerateInput = {}) =>
+    api.post<SunoIssue>(
+      transitionEndpoint(id, "generate/lyrics", companyId),
+      { companyId, ...input },
+    ),
+  /** Uriel: synthesize Suno description text. Result lands in metadata.stages.soundPrompt. */
+  generateSoundPrompt: (id: string, companyId: string, input: GenerateInput = {}) =>
+    api.post<SunoIssue>(
+      transitionEndpoint(id, "generate/sound-prompt", companyId),
+      { companyId, ...input },
+    ),
+  /** Jophiel: image-gen prompt for cover art. Result lands in metadata.stages.visualPrompt. */
+  generateVisualPrompt: (id: string, companyId: string, input: GenerateInput = {}) =>
+    api.post<SunoIssue>(
+      transitionEndpoint(id, "generate/visual-prompt", companyId),
+      { companyId, ...input },
+    ),
+  /** Gabriel: release copy + social caption (parsed JSON). Result in metadata.stages.releaseCopy. */
+  generateReleaseCopy: (id: string, companyId: string, input: GenerateInput = {}) =>
+    api.post<SunoIssue>(
+      transitionEndpoint(id, "generate/release-copy", companyId),
+      { companyId, ...input },
+    ),
 };
+
+// ── Phase 8 generation input ───────────────────────────────────────────────
+
+export interface GenerateInput {
+  /** Override the default OpenRouter model (e.g. swap to a smaller free model). */
+  model?: string;
+  /** Optional hints injected into the prompt (mood, BPM, brand voice, etc.). */
+  hints?: Record<string, unknown>;
+}

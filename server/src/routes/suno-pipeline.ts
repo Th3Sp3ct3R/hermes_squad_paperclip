@@ -37,6 +37,15 @@ import {
 } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { logActivity } from "../services/index.js";
+import {
+  buildLyricsPrompt,
+  buildSoundPromptPrompt,
+  buildVisualPromptPrompt,
+  buildReleaseCopyPrompt,
+  callOpenRouter,
+  SUNO_MODELS,
+  type SunoLlmContext,
+} from "../services/suno-llm.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
 
@@ -125,6 +134,15 @@ const rejectSchema = z.object({
 const failSchema = z.object({
   companyId: z.string().uuid(),
   reason: z.string().min(1).max(2000),
+});
+
+// Phase 8 — generation hooks (OpenRouter)
+const generateSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Optional override of the default model (e.g. test a different free model). */
+  model: z.string().optional(),
+  /** Optional hints to inject into the prompt (mood, BPM, brand voice, etc.). */
+  hints: z.record(z.unknown()).optional(),
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -782,6 +800,223 @@ export function sunoPipelineRoutes(db: Db) {
 
     res.json(row);
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   GENERATION HOOKS (Phase 8 — OpenRouter free-tier)
+  // ────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Persist a stage output onto an issue in the same shape /deposit uses,
+   * so the LLM-generated content joins the same history trail. Returns the
+   * updated row.
+   */
+  async function persistGeneratedStage(args: {
+    issue: typeof sunoIssues.$inferSelect;
+    companyId: string;
+    stage: string;
+    output: string | Record<string, unknown>;
+    agentName: string | null;
+    actor: ReturnType<typeof getActorInfo>;
+    model: string;
+  }) {
+    const meta = (args.issue.metadata ?? {}) as Record<string, unknown>;
+    const stageCache = (meta.stages && typeof meta.stages === "object"
+      ? { ...(meta.stages as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    stageCache[args.stage] = args.output;
+
+    const nextMeta = appendHistory(
+      { ...meta, stages: stageCache, lastGenModel: args.model },
+      {
+        stage: args.stage,
+        output: args.output,
+        at: new Date().toISOString(),
+        actorType: args.actor.actorType,
+        actorId: args.actor.actorId,
+        agentId: args.actor.agentId,
+        agentName: args.agentName,
+        status: args.issue.status as SunoStatus,
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ metadata: nextMeta, updatedAt: new Date() })
+      .where(
+        and(eq(sunoIssues.id, args.issue.id), eq(sunoIssues.companyId, args.companyId)),
+      )
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await logActivity(db, {
+      companyId: args.companyId,
+      actorType: args.actor.actorType,
+      actorId: args.actor.actorId,
+      agentId: args.actor.agentId,
+      runId: args.actor.runId,
+      action: `suno_issue.generated.${args.stage}`,
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        stage: args.stage,
+        agentName: args.agentName,
+        model: args.model,
+        outputSize:
+          typeof args.output === "string" ? args.output.length : JSON.stringify(args.output).length,
+      },
+    });
+
+    return row;
+  }
+
+  /** Build the LLM context object from an issue + caller hints. */
+  function ctxFromIssue(
+    issue: typeof sunoIssues.$inferSelect,
+    hints?: Record<string, unknown>,
+  ): SunoLlmContext {
+    const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+    const stages = (meta.stages && typeof meta.stages === "object"
+      ? (meta.stages as Record<string, unknown>)
+      : {}) as Record<string, unknown>;
+    return {
+      concept: issue.concept,
+      targetChakra: issue.targetChakra,
+      targetFrequency: issue.targetFrequency,
+      genre: issue.genre,
+      lyrics: typeof stages.lyrics === "string" ? (stages.lyrics as string) : undefined,
+      soundPrompt:
+        typeof stages.soundPrompt === "string"
+          ? (stages.soundPrompt as string)
+          : undefined,
+      hints,
+    };
+  }
+
+  /**
+   * Common runner for the four /generate/* routes. Loads the issue, asserts
+   * status is non-terminal, calls OpenRouter with the chosen builder, persists
+   * the result onto the same metadata.stages cache + history trail.
+   */
+  async function runGenerate(
+    req: Request,
+    res: { json: (body: unknown) => void; status: (n: number) => unknown },
+    args: {
+      stage: "lyrics" | "soundPrompt" | "visualPrompt" | "releaseCopy";
+      defaultModel: string;
+      build: (ctx: SunoLlmContext) => Parameters<typeof callOpenRouter>[0]["messages"];
+      maxTokens?: number;
+      /** When true, parse the LLM output as JSON and store the parsed object. */
+      parseJson?: boolean;
+    },
+  ) {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof generateSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const issue = await loadIssueOrThrow(id, body.companyId);
+    if (issue.status === "PUBLISHED" || issue.status === "FAILED") {
+      throw unprocessable(
+        `Cannot generate ${args.stage} on a ${issue.status} issue (terminal state).`,
+      );
+    }
+
+    const ctx = ctxFromIssue(issue, body.hints);
+    const model = body.model ?? args.defaultModel;
+    let raw: string;
+    try {
+      raw = await callOpenRouter({
+        model,
+        messages: args.build(ctx),
+        maxTokens: args.maxTokens,
+      });
+    } catch (err) {
+      throw badRequest(
+        `Generation failed for ${args.stage}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    let output: string | Record<string, unknown> = raw;
+    if (args.parseJson) {
+      try {
+        // Tolerate fenced code blocks like ```json ... ```
+        const cleaned = raw
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/```\s*$/i, "")
+          .trim();
+        output = JSON.parse(cleaned);
+      } catch (err) {
+        // Not fatal — fall back to storing the raw string. Caller can re-run.
+        output = { raw, parseError: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    const actor = getActorInfo(req);
+    const agentName = await resolveActorAgentName(db, req);
+    const row = await persistGeneratedStage({
+      issue,
+      companyId: body.companyId,
+      stage: args.stage,
+      output,
+      agentName,
+      actor,
+      model,
+    });
+
+    res.json(row);
+  }
+
+  // Zadkiel — lyrics
+  router.post(
+    "/suno-pipeline/:id/generate/lyrics",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "lyrics",
+        defaultModel: SUNO_MODELS.lyrics,
+        build: buildLyricsPrompt,
+        maxTokens: 1200,
+      }),
+  );
+
+  // Uriel — Suno description text
+  router.post(
+    "/suno-pipeline/:id/generate/sound-prompt",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "soundPrompt",
+        defaultModel: SUNO_MODELS.soundPrompt,
+        build: buildSoundPromptPrompt,
+        maxTokens: 600,
+      }),
+  );
+
+  // Jophiel — image-gen prompt for cover art
+  router.post(
+    "/suno-pipeline/:id/generate/visual-prompt",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "visualPrompt",
+        defaultModel: SUNO_MODELS.visualPrompt,
+        build: buildVisualPromptPrompt,
+        maxTokens: 500,
+      }),
+  );
+
+  // Gabriel — release copy + social caption (returns JSON)
+  router.post(
+    "/suno-pipeline/:id/generate/release-copy",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "releaseCopy",
+        defaultModel: SUNO_MODELS.releaseCopy,
+        build: buildReleaseCopyPrompt,
+        maxTokens: 800,
+        parseJson: true,
+      }),
+  );
 
   // ── GET /:id/timeline ─────────────────────────────────────────────────────
   // Read activity-log rows scoped to this song, ascending by time. Useful
