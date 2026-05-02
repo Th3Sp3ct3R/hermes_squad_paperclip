@@ -112,6 +112,40 @@ Captured in ENDPOINTS.md but body shapes still needed:
 
 ---
 
+## MiniMax music-2.6 — Suno alternative path (Phase 10)
+
+Alternative server-side music-generation path that doesn't require browser
+automation. Drop-in fallback when Raziel can't drive a browser (or when the
+user wants pure-API generation without Suno).
+
+### Why
+- Server-to-server API call (no browser session, no Clerk JWT)
+- Cost: ~$0.035/song (paid) or free via `music-2.6-free` (rate-limited)
+- Returns audio in mp3/wav/pcm directly
+- Supports cover/remix via `audio_url` reference (Suno's "Extend" equivalent)
+
+### Build
+- [ ] `server/src/services/minimax-music.ts` — POST `https://api.minimax.io/v1/music_generation`
+      with `{ model, prompt, lyrics, audio_setting, output_format: "url" }`
+- [ ] `POST /api/suno-pipeline/:id/generate/song-via-minimax` — alternative
+      to Raziel's Suno path. Reads metadata.stages.lyrics + metadata.stages.soundPrompt,
+      calls MiniMax, deposits audio_url + sets sunoSongId="minimax:<id>" so we
+      can tell which path produced the song.
+- [ ] Env: `MINIMAX_API_KEY` in server's .env
+- [ ] Cover-art for MiniMax songs: still Jophiel via `generateVisualPrompt` →
+      Jophiel hits an image-gen API (FAL / Gemini Image / SDXL). MiniMax
+      music doesn't include thumbnails like Suno does.
+- [ ] Pricing-aware routing: try `music-2.6-free` first, fall back to `music-2.6`
+      paid on 429.
+- [ ] Music-cover endpoint for variants/remix.
+
+### Open question
+Suno's Simple flow auto-generates a video too (`video_url`). MiniMax doesn't.
+For the MiniMax path, video becomes a Cassiel job (ffmpeg compose audio +
+Jophiel's image + waveform).
+
+---
+
 ## Misc bugs noticed during testing
 
 - [ ] Hermes Feed plugin route shows 404 when company prefix in URL is "PLUGINS"

@@ -893,15 +893,53 @@ export function sunoPipelineRoutes(db: Db) {
   }
 
   /**
+   * Look up an archangel by name within a company and return its overridable
+   * generation config. Returns null fields when the agent doesn't exist or
+   * doesn't have overrides set — runGenerate falls back to its defaults.
+   *
+   * Convention: each archangel can override two keys in `agents.runtimeConfig`:
+   *   - `model`         — string, overrides SUNO_MODELS[stage] and body.model
+   *   - `systemPrompt`  — string, replaces the default builder's system message
+   *
+   * Edit these via the Paperclip Agents page (or via SQL) without touching code.
+   */
+  async function loadArchangelConfig(
+    companyId: string,
+    archangelName: string,
+  ): Promise<{ model: string | null; systemPrompt: string | null }> {
+    const [agent] = await db
+      .select({
+        runtimeConfig: agentsTable.runtimeConfig,
+      })
+      .from(agentsTable)
+      .where(
+        and(eq(agentsTable.companyId, companyId), eq(agentsTable.name, archangelName)),
+      )
+      .limit(1);
+    const cfg = (agent?.runtimeConfig ?? {}) as Record<string, unknown>;
+    return {
+      model: typeof cfg.model === "string" ? (cfg.model as string) : null,
+      systemPrompt:
+        typeof cfg.systemPrompt === "string" ? (cfg.systemPrompt as string) : null,
+    };
+  }
+
+  /**
    * Common runner for the four /generate/* routes. Loads the issue, asserts
-   * status is non-terminal, calls OpenRouter with the chosen builder, persists
-   * the result onto the same metadata.stages cache + history trail.
+   * status is non-terminal, looks up the archangel's runtimeConfig overrides,
+   * calls OpenRouter, and persists the result onto the same metadata.stages
+   * cache + history trail used by /deposit.
+   *
+   * Resolution order for `model`:    agent.runtimeConfig.model > body.model > args.defaultModel
+   * Resolution order for `system`:   agent.runtimeConfig.systemPrompt > args.build(ctx)[0]
    */
   async function runGenerate(
     req: Request,
     res: { json: (body: unknown) => void; status: (n: number) => unknown },
     args: {
       stage: "lyrics" | "soundPrompt" | "visualPrompt" | "releaseCopy";
+      /** Archangel responsible for this stage (looked up by name in the company). */
+      archangelName: "Zadkiel" | "Uriel" | "Jophiel" | "Gabriel";
       defaultModel: string;
       build: (ctx: SunoLlmContext) => Parameters<typeof callOpenRouter>[0]["messages"];
       maxTokens?: number;
@@ -920,13 +958,22 @@ export function sunoPipelineRoutes(db: Db) {
       );
     }
 
+    // Per-archangel overrides from agents.runtimeConfig — lets the user swap
+    // models + prompts without touching code. See loadArchangelConfig().
+    const overrides = await loadArchangelConfig(body.companyId, args.archangelName);
+    const model = overrides.model ?? body.model ?? args.defaultModel;
+
     const ctx = ctxFromIssue(issue, body.hints);
-    const model = body.model ?? args.defaultModel;
+    const messages = args.build(ctx);
+    if (overrides.systemPrompt && messages[0]?.role === "system") {
+      messages[0] = { role: "system", content: overrides.systemPrompt };
+    }
+
     let raw: string;
     try {
       raw = await callOpenRouter({
         model,
-        messages: args.build(ctx),
+        messages,
         maxTokens: args.maxTokens,
       });
     } catch (err) {
@@ -951,13 +998,16 @@ export function sunoPipelineRoutes(db: Db) {
     }
 
     const actor = getActorInfo(req);
-    const agentName = await resolveActorAgentName(db, req);
+    const callingAgentName = await resolveActorAgentName(db, req);
     const row = await persistGeneratedStage({
       issue,
       companyId: body.companyId,
       stage: args.stage,
       output,
-      agentName,
+      // The archangel responsible for the work (lookup by name) — distinct
+      // from the actor who triggered the call (could be a board user OR an
+      // agent acting on behalf of the archangel).
+      agentName: callingAgentName ?? args.archangelName,
       actor,
       model,
     });
@@ -972,6 +1022,7 @@ export function sunoPipelineRoutes(db: Db) {
     async (req, res) =>
       runGenerate(req, res, {
         stage: "lyrics",
+        archangelName: "Zadkiel",
         defaultModel: SUNO_MODELS.lyrics,
         build: buildLyricsPrompt,
         maxTokens: 1200,
@@ -985,6 +1036,7 @@ export function sunoPipelineRoutes(db: Db) {
     async (req, res) =>
       runGenerate(req, res, {
         stage: "soundPrompt",
+        archangelName: "Uriel",
         defaultModel: SUNO_MODELS.soundPrompt,
         build: buildSoundPromptPrompt,
         maxTokens: 600,
@@ -998,6 +1050,7 @@ export function sunoPipelineRoutes(db: Db) {
     async (req, res) =>
       runGenerate(req, res, {
         stage: "visualPrompt",
+        archangelName: "Jophiel",
         defaultModel: SUNO_MODELS.visualPrompt,
         build: buildVisualPromptPrompt,
         maxTokens: 500,
@@ -1011,6 +1064,7 @@ export function sunoPipelineRoutes(db: Db) {
     async (req, res) =>
       runGenerate(req, res, {
         stage: "releaseCopy",
+        archangelName: "Gabriel",
         defaultModel: SUNO_MODELS.releaseCopy,
         build: buildReleaseCopyPrompt,
         maxTokens: 800,
