@@ -303,6 +303,25 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
 
   return (
     <div className="rounded-md border bg-card p-2.5 space-y-1.5 hover:shadow-sm transition-shadow">
+      {/* Cover art (when available) — Suno auto-generates this; Jophiel can override */}
+      {issue.thumbnailUrl && (
+        <div className="relative -m-2.5 mb-1.5 aspect-square w-[calc(100%+1.25rem)] overflow-hidden rounded-t-md">
+          <img
+            src={issue.thumbnailUrl}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+            loading="lazy"
+          />
+          {issue.audioUrl && (
+            <span
+              aria-label="audio attached"
+              className="absolute right-1.5 top-1.5 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white backdrop-blur-sm"
+            >
+              ♪ audio
+            </span>
+          )}
+        </div>
+      )}
       <div className="text-[13px] leading-snug font-medium line-clamp-2">
         {issue.concept}
       </div>
@@ -320,6 +339,16 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
         <div className="text-[11px] text-muted-foreground truncate">
           {assigned.join(" · ")}
         </div>
+      )}
+      {/* Inline audio player when audioUrl is set — quick preview without leaving the kanban */}
+      {issue.audioUrl && (
+        <audio
+          src={issue.audioUrl}
+          controls
+          preload="none"
+          className="h-7 w-full"
+          style={{ colorScheme: "dark" }}
+        />
       )}
       <Select
         value={issue.status}
