@@ -46,6 +46,7 @@ import {
   SUNO_MODELS,
   type SunoLlmContext,
 } from "../services/suno-llm.js";
+import { generateCoverArt } from "../services/cover-art-gen.js";
 import {
   generateMinimaxMusic,
   MINIMAX_MUSIC_MODELS,
@@ -161,6 +162,19 @@ const minimaxMusicSchema = z.object({
   lyrics: z.string().max(3500).optional(),
   /** Generate an instrumental track. */
   isInstrumental: z.boolean().optional(),
+});
+
+// Phase 8.5 — cover-art generation (Jophiel renders the visualPrompt)
+const coverArtSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Override the default OpenRouter image model. */
+  model: z.string().optional(),
+  /** 1:1 default — square cover matching Suno's format. */
+  aspectRatio: z.string().optional(),
+  /** "1K" default. Options: 0.5K, 1K, 2K, 4K (model-dependent). */
+  imageSize: z.string().optional(),
+  /** Override the prompt (defaults to metadata.stages.visualPrompt). */
+  prompt: z.string().min(1).max(4000).optional(),
 });
 
 // Phase 9-A — autonomous orchestration
@@ -1212,6 +1226,142 @@ export function sunoPipelineRoutes(db: Db) {
           model: result.model,
           elapsedMs: result.elapsedMs,
           audioUrlPresent: true,
+        },
+      });
+
+      res.json(row);
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   COVER ART GENERATION (Phase 8.5 — Jophiel renders the visualPrompt)
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── POST /:id/generate/cover-art ──────────────────────────────────────────
+  // Jophiel renders an actual cover image from the visualPrompt that
+  // /generate/visual-prompt produced. Replaces Suno's auto-generated
+  // thumbnailUrl with a custom branded one. Original Suno cover is
+  // preserved in metadata.previousThumbnails[].
+  router.post(
+    "/suno-pipeline/:id/generate/cover-art",
+    validate(coverArtSchema),
+    async (req, res) => {
+      const id = paramId(req);
+      const body = req.body as z.infer<typeof coverArtSchema>;
+      assertCompanyAccess(req, body.companyId);
+
+      const issue = await loadIssueOrThrow(id, body.companyId);
+      if (issue.status === "PUBLISHED" || issue.status === "FAILED") {
+        throw unprocessable(
+          `Cannot generate cover art on a ${issue.status} issue (terminal state).`,
+        );
+      }
+
+      // Pull the visualPrompt from metadata.stages — set by /generate/visual-prompt
+      const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+      const prompt =
+        body.prompt ??
+        (typeof stages.visualPrompt === "string"
+          ? (stages.visualPrompt as string)
+          : null);
+
+      if (!prompt) {
+        throw unprocessable(
+          "Cover art generation requires a visualPrompt — call /generate/visual-prompt first or pass `prompt` in body.",
+        );
+      }
+
+      // Per-archangel override: Jophiel's runtimeConfig.imageModel takes priority
+      const overrides = await loadArchangelConfig(body.companyId, "Jophiel");
+      const cfgModel =
+        typeof (overrides as { imageModel?: unknown }).imageModel === "string"
+          ? ((overrides as { imageModel?: string }).imageModel ?? null)
+          : null;
+      const model = body.model ?? cfgModel ?? undefined;
+
+      let result;
+      try {
+        result = await generateCoverArt({
+          prompt,
+          model,
+          aspectRatio: body.aspectRatio ?? "1:1",
+          imageSize: body.imageSize ?? "1K",
+        });
+      } catch (err) {
+        throw badRequest(
+          `Cover art generation failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Build the new metadata: cache new thumbnail, preserve old in history.
+      const previousThumbnail =
+        typeof issue.thumbnailUrl === "string" ? issue.thumbnailUrl : null;
+      const stageCache = { ...stages, thumbnailUrl: result.dataUrl };
+      const previousList = Array.isArray(meta.previousThumbnails)
+        ? (meta.previousThumbnails as unknown[])
+        : [];
+      const actor = getActorInfo(req);
+      const nextMeta = appendHistory(
+        {
+          ...meta,
+          stages: stageCache,
+          lastCoverArtModel: result.model,
+          lastCoverArtMime: result.mimeType,
+          previousThumbnails: previousThumbnail
+            ? [...previousList, previousThumbnail]
+            : previousList,
+        },
+        {
+          // Don't dump the full base64 data URL into history — it's large.
+          // We store size + mime here; the actual image lives in stages.thumbnailUrl
+          // and top-level thumbnailUrl below.
+          stage: "thumbnailUrl",
+          output: {
+            mimeType: result.mimeType,
+            dataUrlBytes: result.dataUrl.length,
+            caption: result.textCaption,
+            elapsedMs: result.elapsedMs,
+          },
+          at: new Date().toISOString(),
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          agentName: "Jophiel",
+          status: issue.status as SunoStatus,
+        },
+      );
+
+      const [row] = await db
+        .update(sunoIssues)
+        .set({
+          thumbnailUrl: result.dataUrl,
+          metadata: nextMeta,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!row) throw notFound("Suno issue not found");
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.cover_art_generated",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: {
+          model: result.model,
+          mimeType: result.mimeType,
+          aspectRatio: body.aspectRatio ?? "1:1",
+          imageSize: body.imageSize ?? "1K",
+          dataUrlBytes: result.dataUrl.length,
+          elapsedMs: result.elapsedMs,
+          replacedPreviousThumbnail: !!previousThumbnail,
         },
       });
 

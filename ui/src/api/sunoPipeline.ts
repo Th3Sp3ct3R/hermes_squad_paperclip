@@ -278,6 +278,22 @@ export const sunoPipelineApi = {
       { companyId, ...input },
     ),
 
+  // ── Cover art generation (Phase 8.5 — Jophiel renders the image) ────
+  /**
+   * Jophiel renders a cover image from metadata.stages.visualPrompt via
+   * OpenRouter image gen. Replaces Suno's auto-generated thumbnailUrl with
+   * a custom branded one. Original Suno cover preserved in
+   * metadata.previousThumbnails[].
+   *
+   * Default model: google/gemini-2.5-flash-image (~$0.0004/image, essentially
+   * free). Override via input.model or env OPENROUTER_IMAGE_MODEL.
+   */
+  generateCoverArt: (id: string, companyId: string, input: CoverArtInput = {}) =>
+    api.post<SunoIssue>(
+      transitionEndpoint(id, "generate/cover-art", companyId),
+      { companyId, ...input },
+    ),
+
   // ── Autonomous orchestrator (Phase 9-A) ───────────────────────────────
   /**
    * End-to-end autonomous run. Auto-assigns archangels by name, dispatches,
@@ -302,6 +318,19 @@ export interface GenerateInput {
   model?: string;
   /** Optional hints injected into the prompt (mood, BPM, brand voice, etc.). */
   hints?: Record<string, unknown>;
+}
+
+// ── Phase 8.5: Cover art (Jophiel image-gen) ───────────────────────────────
+
+export interface CoverArtInput {
+  /** Override the default OpenRouter image model. */
+  model?: string;
+  /** 1:1 default (square cover). Other options: 16:9, 4:3, 9:16, 3:4. */
+  aspectRatio?: "1:1" | "16:9" | "4:3" | "9:16" | "3:4" | "4:5" | "5:4" | string;
+  /** "1K" default. Options: "0.5K", "1K", "2K", "4K" (model-dependent). */
+  imageSize?: "0.5K" | "1K" | "2K" | "4K" | string;
+  /** Override the prompt (defaults to metadata.stages.visualPrompt). */
+  prompt?: string;
 }
 
 // ── Phase 10: MiniMax music ────────────────────────────────────────────────
