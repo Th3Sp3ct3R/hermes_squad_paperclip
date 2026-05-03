@@ -31,6 +31,7 @@ import {
 import { ChakraFrequencyMap } from "@/components/ChakraFrequencyMap";
 import { ArchangelAvatarStack } from "@/components/ArchangelAvatar";
 import { ChakraYantra, type ChakraKey } from "@/components/SacredGeometry";
+import { useAudioAmplitude } from "@/lib/useAudioAmplitude";
 import { cn } from "@/lib/utils";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
@@ -357,7 +358,12 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide rounded-sm border px-1.5 py-0.5 bg-muted/40">
-          <ChakraYantra chakra={issue.targetChakra as ChakraKey} size={11} strokeWidth={2.5} />
+          <ChakraYantra
+            chakra={issue.targetChakra as ChakraKey}
+            size={11}
+            strokeWidth={2.5}
+            spinning={issue.status === "GENERATING"}
+          />
           {issue.targetChakra} · {issue.targetFrequency}Hz
         </span>
         {issue.genre && (
@@ -450,6 +456,15 @@ function AudioVariantRow({
   onPick,
   disabled,
 }: AudioVariantRowProps) {
+  // Pulse the A/B chip in time with the audio amplitude while playing.
+  // Falls back to a slow sine oscillation when CORS blocks AudioContext
+  // analysis (most cross-origin Suno/MiniMax URLs).
+  const { playing, amplitude, setAudioRef } = useAudioAmplitude();
+
+  // Map amplitude (0..1) to a subtle scale (1.0..1.18) and glow intensity.
+  const scale = 1 + amplitude * 0.18;
+  const glow = `drop-shadow(0 0 ${4 + amplitude * 10}px currentColor)`;
+
   return (
     <div className="flex items-center gap-1.5">
       <button
@@ -458,16 +473,22 @@ function AudioVariantRow({
         disabled={disabled}
         title={isCanon ? `${source} (canon)` : `Pick ${source} as canon`}
         className={cn(
-          "shrink-0 inline-flex items-center justify-center h-6 w-6 rounded text-[10px] font-bold uppercase border transition-colors",
+          "shrink-0 inline-flex items-center justify-center h-6 w-6 rounded text-[10px] font-bold uppercase border transition-colors audio-wave-pulse",
           isCanon
             ? "bg-emerald-500/20 text-emerald-200 border-emerald-500/50 ring-1 ring-emerald-400/40"
             : "bg-muted/40 text-muted-foreground border-border hover:bg-muted/70 hover:text-foreground",
           disabled && "opacity-50 cursor-not-allowed",
         )}
+        style={
+          playing
+            ? { transform: `scale(${scale})`, filter: glow }
+            : undefined
+        }
       >
         {label}
       </button>
       <audio
+        ref={setAudioRef}
         src={src}
         controls
         preload="none"

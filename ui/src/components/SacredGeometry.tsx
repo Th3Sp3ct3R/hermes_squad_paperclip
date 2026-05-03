@@ -111,6 +111,8 @@ interface ChakraYantraProps {
   /** Override the default chakra color. */
   colorClass?: string;
   strokeWidth?: number;
+  /** When true, slowly rotate the yantra (used during GENERATING). */
+  spinning?: boolean;
 }
 
 export function ChakraYantra({
@@ -119,6 +121,7 @@ export function ChakraYantra({
   className,
   colorClass,
   strokeWidth = 2,
+  spinning = false,
 }: ChakraYantraProps) {
   const Glyph = CHAKRA_GLYPH_MAP[chakra];
   return (
@@ -131,7 +134,11 @@ export function ChakraYantra({
       strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn(colorClass ?? CHAKRA_COLOR_CLASS[chakra], className)}
+      className={cn(
+        colorClass ?? CHAKRA_COLOR_CLASS[chakra],
+        spinning && "chakra-spin",
+        className,
+      )}
       aria-hidden="true"
     >
       <Glyph />

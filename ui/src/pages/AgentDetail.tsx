@@ -60,6 +60,8 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
+import { ArchangelAvatar } from "../components/ArchangelAvatar";
+import { SPHERE_COLOR_CLASS, type ArchangelName } from "../components/SacredGeometry";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
   isUuidLike,
@@ -741,14 +743,28 @@ export function AgentDetail() {
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
-          <AgentIconPicker
-            value={agent.icon}
-            onChange={(icon) => updateIcon.mutate(icon)}
-          >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </button>
-          </AgentIconPicker>
+          {agent.name in SPHERE_COLOR_CLASS ? (
+            // Archangel: large portrait inside sphere geometry. No icon-picker
+            // for archangels — their identity is fixed by the seed.
+            <div className="shrink-0">
+              <ArchangelAvatar
+                name={agent.name as ArchangelName}
+                size="lg"
+                working={
+                  agent.status === "active" || agent.status === "running"
+                }
+              />
+            </div>
+          ) : (
+            <AgentIconPicker
+              value={agent.icon}
+              onChange={(icon) => updateIcon.mutate(icon)}
+            >
+              <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
+                <AgentIcon icon={agent.icon} className="h-6 w-6" />
+              </button>
+            </AgentIconPicker>
+          )}
           <div className="min-w-0">
             <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
             <p className="text-sm text-muted-foreground truncate">

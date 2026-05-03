@@ -748,6 +748,27 @@ a.paperclip-project-mention-chip {
   transform-origin: center;
 }
 
+/* Slow continuous rotation for chakra yantras while a song is being made.
+   Pairs with the archangel-pulse on assigned avatars so the whole card
+   feels alive during GENERATING. */
+@keyframes chakra-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.chakra-spin {
+  animation: chakra-spin 12s linear infinite;
+  transform-origin: center;
+}
+
+/* Audio-amplitude visualizer pulse — used by the AudioWavePulse component to
+   pulse the chakra yantra in time with the track. The actual amplitude is
+   driven by JS via inline transform; this rule just establishes the origin. */
+.audio-wave-pulse {
+  transform-origin: center;
+  transition: transform 80ms linear, filter 80ms linear;
+}
+
 /* Subtle Flower-of-Life backdrop for the Suno page (and any opt-in surface). */
 .suno-flower-backdrop {
   background-image:
