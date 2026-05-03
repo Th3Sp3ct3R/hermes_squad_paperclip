@@ -24,12 +24,16 @@
  */
 import { Router, type Request } from "express";
 import { z } from "zod";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   sunoIssues,
   agents as agentsTable,
   activityLog,
+  goals,
+  projects,
+  issues,
+  companies,
   SUNO_CHAKRAS,
   SUNO_STATUSES,
   SUNO_CHAKRA_FREQUENCIES,
@@ -306,6 +310,209 @@ export function sunoPipelineRoutes(db: Db) {
   }
 
   // ────────────────────────────────────────────────────────────────────────
+  // Unified hierarchy promotion (option C) — every sunoIssue is also a real
+  // `issues` row under a "Music Orchestra" project under a "Songs" goal, so
+  // songs show up everywhere the rest of the work tracking does (Issues
+  // board, project pages, Hermes Feed, TASKS.md, etc.).
+  // ────────────────────────────────────────────────────────────────────────
+
+  const MUSIC_GOAL_NAME = "Songs";
+  const MUSIC_PROJECT_NAME = "Music Orchestra";
+
+  /** Map sunoIssue status → canonical issue status (ALL_ISSUE_STATUSES). */
+  function mapSunoToIssueStatus(s: SunoStatus): string {
+    switch (s) {
+      case "DRAFT":      return "backlog";
+      case "GENERATING": return "in_progress";
+      case "REVIEW":     return "in_review";
+      case "APPROVED":   return "in_review";
+      case "PUBLISHED":  return "done";
+      case "FAILED":     return "cancelled";
+      default:           return "backlog";
+    }
+  }
+
+  /**
+   * Idempotently fetch (or create) the company's default Music goal +
+   * project. Returns { goalId, projectId } both guaranteed non-null.
+   */
+  async function ensureMusicProjectAndGoal(
+    companyId: string,
+  ): Promise<{ goalId: string; projectId: string }> {
+    // 1. Goal — a single canonical "Songs" goal per company.
+    //    goals uses `title` (not name) and has no metadata column.
+    const [existingGoal] = await db
+      .select({ id: goals.id })
+      .from(goals)
+      .where(and(eq(goals.companyId, companyId), eq(goals.title, MUSIC_GOAL_NAME)))
+      .limit(1);
+
+    let goalId = existingGoal?.id;
+    if (!goalId) {
+      const [newGoal] = await db
+        .insert(goals)
+        .values({
+          companyId,
+          title: MUSIC_GOAL_NAME,
+          status: "in_progress",
+          description: "Songs shipped by the autonomous music orchestra (Suno + MiniMax pipeline).",
+        })
+        .returning({ id: goals.id });
+      goalId = newGoal!.id;
+    }
+
+    // 2. Project — "Music Orchestra" under the Songs goal.
+    const [existingProject] = await db
+      .select({ id: projects.id, goalId: projects.goalId })
+      .from(projects)
+      .where(
+        and(eq(projects.companyId, companyId), eq(projects.name, MUSIC_PROJECT_NAME)),
+      )
+      .limit(1);
+
+    let projectId = existingProject?.id;
+    if (!projectId) {
+      const [newProject] = await db
+        .insert(projects)
+        .values({
+          companyId,
+          goalId,
+          name: MUSIC_PROJECT_NAME,
+          description:
+            "Songs flowing through the Suno pipeline. Each issue here is a song concept tracked end-to-end (DRAFT → PUBLISHED).",
+          status: "in_progress",
+        })
+        .returning({ id: projects.id });
+      projectId = newProject!.id;
+    } else if (!existingProject.goalId || existingProject.goalId !== goalId) {
+      // Backfill goalId on the project if missing or stale.
+      await db
+        .update(projects)
+        .set({ goalId })
+        .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)));
+    }
+
+    return { goalId, projectId };
+  }
+
+  /**
+   * Compose a short title + structured description for the parent issue
+   * from a sunoIssue. Title caps at 100 chars to fit the Issues board well.
+   */
+  function buildIssueShellFromSuno(
+    suno: typeof sunoIssues.$inferSelect,
+  ): { title: string; description: string } {
+    const titleSeed = suno.concept.split("\n")[0]?.trim() ?? suno.concept;
+    const title = titleSeed.length > 100 ? `${titleSeed.slice(0, 99)}…` : titleSeed;
+    const lines = [
+      `♪ ${suno.targetChakra} · ${suno.targetFrequency} Hz Solfeggio carrier`,
+      suno.genre ? `Genre: ${suno.genre}` : null,
+      "",
+      "Concept:",
+      suno.concept,
+    ].filter((l): l is string => l !== null);
+    return { title, description: lines.join("\n") };
+  }
+
+  /**
+   * Create a parent issue for a freshly-created sunoIssue and link it back
+   * via sunoIssues.issueId. Allocates an issueNumber atomically from the
+   * company. Best-effort: if the link fails, returns null and the suno_issue
+   * remains unlinked rather than blocking creation.
+   */
+  async function createLinkedIssueForSuno(
+    suno: typeof sunoIssues.$inferSelect,
+    actorIds: { agentId: string | null; userId: string | null },
+  ): Promise<string | null> {
+    try {
+      const { goalId, projectId } = await ensureMusicProjectAndGoal(suno.companyId);
+      const shell = buildIssueShellFromSuno(suno);
+
+      // Allocate an issueNumber atomically.
+      const [company] = await db
+        .update(companies)
+        .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+        .where(eq(companies.id, suno.companyId))
+        .returning({
+          issueCounter: companies.issueCounter,
+          issuePrefix: companies.issuePrefix,
+        });
+      if (!company) return null;
+
+      const issueNumber = company.issueCounter;
+      const identifier = `${company.issuePrefix}-${issueNumber}`;
+
+      const [issueRow] = await db
+        .insert(issues)
+        .values({
+          companyId: suno.companyId,
+          projectId,
+          goalId,
+          title: shell.title,
+          description: shell.description,
+          status: mapSunoToIssueStatus(suno.status as SunoStatus),
+          priority: "medium",
+          // Lyrics agent makes a reasonable default assignee — falls back
+          // to sound, then visual, then null. Michael is intentionally NOT
+          // the default since the song is doing the actual creative work.
+          assigneeAgentId:
+            suno.lyricsAgentId ?? suno.soundAgentId ?? suno.visualAgentId ?? null,
+          createdByAgentId: actorIds.agentId,
+          createdByUserId: actorIds.userId,
+          issueNumber,
+          identifier,
+        })
+        .returning({ id: issues.id });
+
+      const newIssueId = issueRow?.id ?? null;
+      if (!newIssueId) return null;
+
+      // Link the suno_issue back to the new issue.
+      await db
+        .update(sunoIssues)
+        .set({ issueId: newIssueId, updatedAt: new Date() })
+        .where(
+          and(eq(sunoIssues.id, suno.id), eq(sunoIssues.companyId, suno.companyId)),
+        );
+
+      return newIssueId;
+    } catch (err) {
+      // Don't break suno creation if the unified-hierarchy link fails.
+      // eslint-disable-next-line no-console
+      console.error("[suno-pipeline] Failed to create linked issue:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Mirror a sunoIssue status change to its linked issue (if any). Best-effort.
+   * Keeps the unified board accurate without blocking the suno transition.
+   */
+  async function syncLinkedIssueStatus(
+    suno: typeof sunoIssues.$inferSelect,
+    nextSunoStatus: SunoStatus,
+  ): Promise<void> {
+    if (!suno.issueId) return;
+    const nextIssueStatus = mapSunoToIssueStatus(nextSunoStatus);
+    try {
+      const setPatch: Record<string, unknown> = {
+        status: nextIssueStatus,
+        updatedAt: new Date(),
+      };
+      if (nextIssueStatus === "in_progress") setPatch.startedAt = new Date();
+      if (nextIssueStatus === "done") setPatch.completedAt = new Date();
+      if (nextIssueStatus === "cancelled") setPatch.cancelledAt = new Date();
+      await db
+        .update(issues)
+        .set(setPatch)
+        .where(and(eq(issues.id, suno.issueId), eq(issues.companyId, suno.companyId)));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[suno-pipeline] Failed to mirror status to linked issue:", err);
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
   //   CRUD
   // ────────────────────────────────────────────────────────────────────────
 
@@ -373,7 +580,34 @@ export function sunoPipelineRoutes(db: Db) {
       },
     });
 
-    res.status(201).json(row);
+    // Option C — auto-promote to the unified Goal/Project/Issue tree.
+    // Creates "Songs" goal + "Music Orchestra" project on first song,
+    // then a backlog issue linked back via sunoIssues.issueId. Failures
+    // here don't block creation (the suno_issue still exists).
+    const linkedIssueId = await createLinkedIssueForSuno(row, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    if (linkedIssueId) {
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.linked_to_issue",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: { issueId: linkedIssueId },
+      });
+    }
+
+    // Re-fetch so the response includes the freshly-set issueId.
+    const final = linkedIssueId
+      ? (await loadIssueOrThrow(row.id, body.companyId))
+      : row;
+    res.status(201).json(final);
   });
 
   // ── PATCH /suno-pipeline/:id ──────────────────────────────────────────────
@@ -420,6 +654,11 @@ export function sunoPipelineRoutes(db: Db) {
       .returning();
     if (!row) throw notFound("Suno issue not found");
 
+    // Mirror status to linked issue if it changed.
+    if (body.status !== undefined && body.status !== existing.status) {
+      await syncLinkedIssueStatus(row, body.status);
+    }
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
@@ -438,6 +677,46 @@ export function sunoPipelineRoutes(db: Db) {
     });
 
     res.json(row);
+  });
+
+  // ── POST /suno-pipeline/backfill-issues ───────────────────────────────────
+  // One-time admin op (idempotent): find sunoIssues with no linked issue
+  // and create one for each. Used for songs created BEFORE option C landed,
+  // or to re-sync after a manual schema change.
+  router.post("/suno-pipeline/backfill-issues", async (req, res) => {
+    const companyId = resolveCompanyId(req);
+    assertCompanyAccess(req, companyId);
+
+    const unlinked = await db
+      .select()
+      .from(sunoIssues)
+      .where(and(eq(sunoIssues.companyId, companyId), sql`${sunoIssues.issueId} IS NULL`))
+      .orderBy(asc(sunoIssues.createdAt));
+
+    const actor = getActorInfo(req);
+    const results: Array<{ sunoIssueId: string; issueId: string | null }> = [];
+    for (const suno of unlinked) {
+      const issueId = await createLinkedIssueForSuno(suno, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      results.push({ sunoIssueId: suno.id, issueId });
+    }
+
+    const linkedCount = results.filter((r) => r.issueId).length;
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_pipeline.backfilled_issues",
+      entityType: "company",
+      entityId: companyId,
+      details: { totalUnlinked: unlinked.length, linkedCount },
+    });
+
+    res.json({ totalUnlinked: unlinked.length, linkedCount, results });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -601,6 +880,9 @@ export function sunoPipelineRoutes(db: Db) {
       .returning();
     if (!row) throw notFound("Suno issue not found");
 
+    // Mirror to linked issue (option C unified hierarchy).
+    await syncLinkedIssueStatus(row, "GENERATING");
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: body.companyId,
@@ -655,6 +937,8 @@ export function sunoPipelineRoutes(db: Db) {
         .returning();
       if (!row) throw notFound("Suno issue not found");
 
+      await syncLinkedIssueStatus(row, "REVIEW");
+
       const actor = getActorInfo(req);
       await logActivity(db, {
         companyId: body.companyId,
@@ -697,6 +981,8 @@ export function sunoPipelineRoutes(db: Db) {
       .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
       .returning();
     if (!row) throw notFound("Suno issue not found");
+
+    await syncLinkedIssueStatus(row, "APPROVED");
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -756,6 +1042,8 @@ export function sunoPipelineRoutes(db: Db) {
       .returning();
     if (!row) throw notFound("Suno issue not found");
 
+    await syncLinkedIssueStatus(row, "GENERATING");
+
     await logActivity(db, {
       companyId: body.companyId,
       actorType: actor.actorType,
@@ -799,6 +1087,8 @@ export function sunoPipelineRoutes(db: Db) {
       .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
       .returning();
     if (!row) throw notFound("Suno issue not found");
+
+    await syncLinkedIssueStatus(row, "PUBLISHED");
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -1002,6 +1292,8 @@ export function sunoPipelineRoutes(db: Db) {
       .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
       .returning();
     if (!row) throw notFound("Suno issue not found");
+
+    await syncLinkedIssueStatus(row, "FAILED");
 
     await logActivity(db, {
       companyId: body.companyId,
@@ -1686,6 +1978,8 @@ export function sunoPipelineRoutes(db: Db) {
       if (!dispatched) throw notFound("Suno issue not found");
       issue = dispatched;
 
+      await syncLinkedIssueStatus(issue, "GENERATING");
+
       await logActivity(db, {
         companyId: body.companyId,
         actorType: actor.actorType,
@@ -1897,6 +2191,7 @@ export function sunoPipelineRoutes(db: Db) {
         .returning();
       if (reviewed) {
         issue = reviewed;
+        await syncLinkedIssueStatus(issue, "REVIEW");
         await logActivity(db, {
           companyId: body.companyId,
           actorType: actor.actorType,
