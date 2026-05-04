@@ -207,15 +207,19 @@ export function SunoPipeline() {
   return (
     <div className="suno-flower-backdrop flex flex-col gap-6 p-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Music className="h-5 w-5 text-muted-foreground" />
-            <h1 className="text-2xl font-semibold tracking-tight">Suno Pipeline</h1>
+        <div className="flex items-start gap-4">
+          {/* Caduceus badge — total tracks counter, lunar-mercurial Albedo glow */}
+          <CaduceusBadge totalTracks={issues?.length ?? 0} />
+          <div>
+            <div className="flex items-center gap-2">
+              <Music className="h-5 w-5 text-muted-foreground" />
+              <h1 className="text-2xl font-semibold tracking-tight">Suno Pipeline</h1>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Autonomous music production board. Concepts move from draft through
+              generation, review, and release.
+            </p>
           </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            Autonomous music production board. Concepts move from draft through
-            generation, review, and release.
-          </p>
         </div>
         <Button
           onClick={() => setShowCreate((v) => !v)}
@@ -376,6 +380,64 @@ export function SunoPipeline() {
 
 interface ArchangelAgentBarProps {
   issues: SunoIssue[];
+}
+
+/**
+ * Caduceus badge — Hermes' twin-snake-and-winged-staff in the Albedo
+ * glow register, with the total-tracks count beneath. The caduceus is
+ * the boundary-crossing / mediation glyph — exactly the Hermes Squad's
+ * orchestration register, NOT the Rod of Asclepius (one snake, no
+ * wings) which belongs to medicine.
+ */
+function CaduceusBadge({ totalTracks }: { totalTracks: number }) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center gap-1 rounded-2xl border p-3 shrink-0"
+      style={{
+        backgroundColor: "rgba(255,255,255,0.04)",
+        borderColor: "#C0C0C0",
+        boxShadow: "inset 0 0 24px rgba(192,192,192,0.08), 0 0 18px rgba(192,192,192,0.18)",
+        width: 96,
+        height: 96,
+      }}
+      title={`${totalTracks} tracks in this pipeline — caduceus, the Hermes Squad orchestration glyph`}
+    >
+      <svg
+        viewBox="0 0 64 80"
+        width="48"
+        height="60"
+        fill="none"
+        stroke="#FFFFFF"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        style={{ filter: "drop-shadow(0 0 4px rgba(255,255,255,0.85)) drop-shadow(0 0 8px rgba(192,192,192,0.4))" }}
+        aria-hidden
+      >
+        {/* central staff */}
+        <line x1="32" y1="14" x2="32" y2="68" />
+        {/* orb at top */}
+        <circle cx="32" cy="13" r="2.6" fill="#FFFFFF" />
+        {/* left wing */}
+        <path d="M32 22 C 22 20, 14 22, 8 28 C 14 26, 20 26, 26 27 M32 26 C 22 26, 14 28, 10 32 C 16 30, 22 30, 27 31" />
+        {/* right wing (mirror) */}
+        <path d="M32 22 C 42 20, 50 22, 56 28 C 50 26, 44 26, 38 27 M32 26 C 42 26, 50 28, 54 32 C 48 30, 42 30, 37 31" />
+        {/* left serpent — sinusoidal climb */}
+        <path d="M32 32 C 22 36, 22 40, 32 44 C 42 48, 42 52, 32 56 C 22 60, 22 64, 28 68" />
+        {/* right serpent — counter-phase */}
+        <path d="M32 32 C 42 36, 42 40, 32 44 C 22 48, 22 52, 32 56 C 42 60, 42 64, 36 68" />
+        {/* serpent heads (small ovals) */}
+        <ellipse cx="22.5" cy="34" rx="2" ry="1.4" fill="#FFFFFF" />
+        <ellipse cx="41.5" cy="34" rx="2" ry="1.4" fill="#FFFFFF" />
+      </svg>
+      <span
+        className="text-xs font-semibold tabular-nums tracking-wide"
+        style={{ color: "#FFFFFF", textShadow: "0 0 6px rgba(192,192,192,0.6)" }}
+      >
+        {totalTracks}
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -588,10 +650,13 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
         </div>
       )}
       {/* A/B audio variants — Suno (A-side) + MiniMax (B-side). Click the
-          A or B chip to set the canonical winner; chip glows when picked. */}
-      {(hasSuno || hasMinimax) && (
+          A or B chip to set the canonical winner; chip glows when picked.
+          Both rows always render once status >= GENERATING so the empty
+          slot is visible (rather than collapsing) — makes it obvious which
+          backend hasn't generated yet. */}
+      {(hasSuno || hasMinimax || issue.status !== "DRAFT") && (
         <div className="space-y-1 pt-0.5">
-          {hasSuno && (
+          {hasSuno ? (
             <AudioVariantRow
               label="A"
               source="Suno"
@@ -604,8 +669,10 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
               }
               disabled={pickCanonMutation.isPending}
             />
+          ) : (
+            <EmptyVariantRow label="A" source="Suno" />
           )}
-          {hasMinimax && (
+          {hasMinimax ? (
             <AudioVariantRow
               label="B"
               source="MiniMax"
@@ -618,6 +685,8 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
               }
               disabled={pickCanonMutation.isPending}
             />
+          ) : (
+            <EmptyVariantRow label="B" source="MiniMax" />
           )}
         </div>
       )}
@@ -649,6 +718,38 @@ interface AudioVariantRowProps {
   isCanon: boolean;
   onPick: () => void;
   disabled: boolean;
+}
+
+/**
+ * Empty placeholder row for an A or B variant slot when that backend
+ * hasn't generated yet. Keeps the card height stable (Suno + MiniMax
+ * always occupy two rows once status >= GENERATING) and makes it
+ * obvious which backend is still pending.
+ */
+function EmptyVariantRow({ label, source }: { label: "A" | "B"; source: "Suno" | "MiniMax" }) {
+  return (
+    <div
+      className="flex items-center gap-2 rounded-md border border-dashed border-border/40 bg-muted/10 px-2 py-1.5"
+      title={`${source} (${label}-side) — not generated yet`}
+    >
+      <span
+        className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold tabular-nums shrink-0"
+        style={{
+          color: "#C0C0C0",
+          backgroundColor: "rgba(192,192,192,0.05)",
+          border: "1px dashed #C0C0C0",
+        }}
+      >
+        {label}
+      </span>
+      <span className="text-[10px] uppercase tracking-widest text-muted-foreground/50 shrink-0">
+        {source}
+      </span>
+      <span className="text-[10px] text-muted-foreground/40 italic ml-auto">
+        empty · pending
+      </span>
+    </div>
+  );
 }
 
 function AudioVariantRow({
