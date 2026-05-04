@@ -324,10 +324,14 @@ function TasksMdPanel({ title, icon, path }: TasksMdPanelProps) {
 
 // ─── Sidebar (small status pill in left nav) ────────────────────────────────
 
-export function HermesFeedSidebar(_: PluginSidebarProps) {
+export function HermesFeedSidebar({ context }: PluginSidebarProps) {
+  // Use the plugin's page route under the company prefix to avoid breaking
+  // the router's company prefix detection (relative <a> tags cause the
+  // router to pick up "PLUGINS" as the company prefix).
+  const prefix = context?.companyPrefix ?? "THE";
   return (
     <a
-      href="../plugins/paperclip.hermes-feed"
+      href={`/${prefix}/hermes-feed`}
       className="flex items-center gap-2 px-3 py-2 text-sm rounded hover:bg-accent transition-colors"
     >
       <span aria-hidden>📡</span>

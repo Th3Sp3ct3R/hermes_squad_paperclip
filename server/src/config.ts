@@ -25,7 +25,10 @@ import {
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
-  loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
+  // override: true — the instance .env is the authoritative source for API keys.
+  // Shell env may contain stale placeholders (e.g. OPENROUTER_API_KEY=sk-or-your-key-here)
+  // that would shadow real keys if we used override: false.
+  loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: true, quiet: true });
 }
 
 const CWD_ENV_PATH = resolve(process.cwd(), ".env");

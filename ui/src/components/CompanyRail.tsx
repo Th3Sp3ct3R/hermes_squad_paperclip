@@ -268,9 +268,24 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+      {/* Host company icon — above the Paperclip */}
+      {(() => {
+        const host = sidebarCompanies.find((c) => c.id === selectedCompanyId);
+        return host ? (
+          <div className="flex items-center justify-center pt-2 pb-1 w-full shrink-0">
+            <CompanyPatternIcon
+              companyName={host.name}
+              logoUrl={host.logoUrl}
+              brandColor={host.brandColor}
+              className="w-10 h-10 rounded-xl"
+            />
+          </div>
+        ) : null;
+      })()}
+
+      {/* Paperclip icon */}
+      <div className="flex items-center justify-center h-10 w-full shrink-0">
+        <Paperclip className="h-5 w-5 text-muted-foreground" />
       </div>
 
       {/* Company list */}
@@ -312,10 +327,10 @@ export function CompanyRail() {
           <TooltipTrigger asChild>
             <button
               onClick={() => openOnboarding()}
-              className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
+              className="flex items-center justify-center w-12 h-12 rounded-[24px] hover:rounded-[16px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
               aria-label="Add company"
             >
-              <Plus className="h-5 w-5" />
+              <Plus className="h-6 w-6" />
             </button>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={8}>

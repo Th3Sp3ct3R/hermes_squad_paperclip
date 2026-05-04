@@ -29,8 +29,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ChakraFrequencyMap } from "@/components/ChakraFrequencyMap";
-import { ArchangelAvatarStack } from "@/components/ArchangelAvatar";
-import { ChakraYantra, type ChakraKey } from "@/components/SacredGeometry";
+import { ArchangelAvatar, ArchangelAvatarStack } from "@/components/ArchangelAvatar";
+import { ChakraYantra, type ArchangelName, type ChakraKey } from "@/components/SacredGeometry";
 import { useAudioAmplitude } from "@/lib/useAudioAmplitude";
 import { cn } from "@/lib/utils";
 import { agentsApi } from "@/api/agents";
@@ -56,6 +56,34 @@ const STATUS_LABEL: Record<SunoStatus, string> = {
   FAILED: "Failed",
 };
 
+const MOOD_PRESET_CHIPS = [
+  { id: "deep-work", label: "Deep Work", emoji: "\u{1F5A5}", concept: "Dark minimalist ambient instrumental designed for deep focus and long-form cognitive work.", targetChakra: "THIRD_EYE" as SunoChakra, genre: "dark ambient, minimal electronic, drone, cinematic texture, experimental" },
+  { id: "creative-flow", label: "Creative Flow", emoji: "\u{1F3A8}", concept: "Warm ambient electronic instrumental that gradually shifts from deep introspective calm into gentle creative flow.", targetChakra: "HEART" as SunoChakra, genre: "ambient electronic, warm pads, cinematic texture, experimental, minimal" },
+  { id: "calm-productivity", label: "Calm Productivity", emoji: "\u{2615}", concept: "Clean, calm ambient instrumental for steady productivity and relaxed focus.", targetChakra: "SOLAR" as SunoChakra, genre: "ambient, minimal electronic, calm, atmospheric, unobtrusive" },
+  { id: "shadow-work", label: "Shadow Work", emoji: "\u{1F52E}", concept: "Dark ambient instrumental designed for shadow integration with emotional regulation.", targetChakra: "ROOT" as SunoChakra, genre: "dark ambient, drone, ethereal bass, shadow integration" },
+  { id: "night-drive", label: "Night Drive", emoji: "\u{1F319}", concept: "Driving through an empty city at 2am with tinted windows.", targetChakra: "SACRAL" as SunoChakra, genre: "dark trap, phonk, memphis rap instrumental, cinematic hip-hop" },
+  { id: "gym-run", label: "Gym / Run", emoji: "\u{1F4AA}", concept: "Controlled rage, not reckless anger. A machine, not an animal.", targetChakra: "ROOT" as SunoChakra, genre: "dark industrial hip-hop, aggressive trap, grime instrumental, phonk" },
+  { id: "morning-walk", label: "Morning Walk", emoji: "\u{1F6B6}", concept: "A man walking through cold air with purpose.", targetChakra: "SOLAR" as SunoChakra, genre: "boom bap, instrumental hip-hop, golden era beats, dusty samples" },
+  { id: "wind-down", label: "Wind Down", emoji: "\u{1F373}", concept: "Cooking something good alone in a clean kitchen with low lighting.", targetChakra: "HEART" as SunoChakra, genre: "lo-fi hip-hop, chillhop, smooth jazz beats, ambient R&B instrumental" },
+  { id: "alpha-theta-bridge", label: "Work Wrap-Up", emoji: "\u{1F306}", concept: "Dark ambient soundscape designed for late-night focus and calm.", targetChakra: "THIRD_EYE" as SunoChakra, genre: "dark ambient, minimal, luxury" },
+  { id: "architect-silence", label: "Architect Silence", emoji: "\u{1F3DB}", concept: "Dark AI ambient drone with no tempo and no identifiable structure.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, void" },
+  { id: "dark-piano", label: "Dark Piano", emoji: "\u{1F3B9}", concept: "Sparse, slow piano notes played in a dark ambient space.", targetChakra: "HEART" as SunoChakra, genre: "dark piano, ambient luxury" },
+  { id: "pre-sleep", label: "Pre-Sleep", emoji: "\u{1F4D6}", concept: "Ultra-minimal ambient soundscape designed for late-night listening and subconscious learning.", targetChakra: "CROWN" as SunoChakra, genre: "ultra-minimal, dark ambient, near-silence" },
+  { id: "sleep", label: "Sleep", emoji: "\u{1F634}", concept: "Ultra-minimalist dark ambient soundscape designed for neural shutdown.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, sleep music, deep space, minimal electronic" },
+];
+
+const PIPELINE_AGENTS: { name: ArchangelName; role: string; sphere: string; domain: string }[] = [
+  { name: "Michael", role: "Commander", sphere: "Geburah", domain: "Assigns agents, dispatches issues" },
+  { name: "Uriel", role: "Sound Prompt", sphere: "Netzach", domain: "Writes Suno/MiniMax description text" },
+  { name: "Zadkiel", role: "Lyricist", sphere: "Chesed", domain: "Chakra-resonant lyrics or [Instrumental]" },
+  { name: "Jophiel", role: "Visual Art", sphere: "Chokmah", domain: "Cover art prompt & image generation" },
+  { name: "Raziel", role: "Audio Engineer", sphere: "Chokmah", domain: "Drives Suno UI + MiniMax API" },
+  { name: "Raphael", role: "Reviewer", sphere: "Tiphareth", domain: "Approves or rejects the output" },
+  { name: "Gabriel", role: "Release Copy", sphere: "Yesod", domain: "Caption, hashtags, release notes" },
+  { name: "Sandalphon", role: "Publisher", sphere: "Malkuth", domain: "Ships to DistroKid" },
+  { name: "Metatron", role: "Timeline", sphere: "Keter", domain: "Activity log & celestial scribe" },
+];
+
 const sunoQueryKey = (companyId: string) => ["suno-pipeline", companyId] as const;
 
 export function SunoPipeline() {
@@ -66,6 +94,12 @@ export function SunoPipeline() {
   const [conceptDraft, setConceptDraft] = useState("");
   const [chakraDraft, setChakraDraft] = useState<SunoChakra>("HEART");
   const [genreDraft, setGenreDraft] = useState("");
+
+  // Resolve which preset is selected (if any) by matching concept text
+  const selectedPreset = useMemo(
+    () => MOOD_PRESET_CHIPS.find((p) => p.concept === conceptDraft) ?? null,
+    [conceptDraft],
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Suno Pipeline" }]);
@@ -163,55 +197,102 @@ export function SunoPipeline() {
       </div>
 
       {showCreate && (
-        <Card className="p-4">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-            <div className="md:col-span-6 space-y-1.5">
-              <Label htmlFor="suno-concept">Concept</Label>
-              <Input
-                id="suno-concept"
-                placeholder="e.g. midnight elevator descent, vaporwave decay…"
-                value={conceptDraft}
-                onChange={(e) => setConceptDraft(e.target.value)}
-              />
+        <Card className="p-4 space-y-4">
+          {/* ── Mood Preset Chips ── */}
+          <div>
+            <Label className="text-xs uppercase tracking-widest text-muted-foreground mb-2 block">Quick Start</Label>
+            <div className="flex flex-wrap gap-2">
+              {MOOD_PRESET_CHIPS.map((preset) => (
+                <button
+                  key={preset.id}
+                  onClick={() => {
+                    setConceptDraft(preset.concept);
+                    setChakraDraft(preset.targetChakra);
+                    setGenreDraft(preset.genre);
+                  }}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors",
+                    conceptDraft === preset.concept
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border/50 bg-card/50 text-foreground hover:bg-accent hover:border-foreground/20",
+                  )}
+                >
+                  <span>{preset.emoji}</span>
+                  <span>{preset.label}</span>
+                </button>
+              ))}
             </div>
-            <div className="md:col-span-3 space-y-1.5">
-              <Label htmlFor="suno-chakra">Target chakra</Label>
-              <Select
-                value={chakraDraft}
-                onValueChange={(v) => setChakraDraft(v as SunoChakra)}
-              >
-                <SelectTrigger id="suno-chakra">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SUNO_CHAKRAS.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c} · {SUNO_CHAKRA_FREQUENCIES[c]} Hz
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="md:col-span-2 space-y-1.5">
-              <Label htmlFor="suno-genre">Genre</Label>
-              <Input
-                id="suno-genre"
-                placeholder="ambient, dark hip-hop…"
-                value={genreDraft}
-                onChange={(e) => setGenreDraft(e.target.value)}
-              />
-            </div>
-            <div className="md:col-span-1">
+          </div>
+
+          {/* ── Preset selected: show summary + Create ── */}
+          {/* ── Custom: show full form ── */}
+          {selectedPreset ? (
+            <div className="flex items-center justify-between gap-4 pt-1">
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">{selectedPreset.targetChakra}</span>
+                <span>·</span>
+                <span>{SUNO_CHAKRA_FREQUENCIES[selectedPreset.targetChakra]} Hz</span>
+                <span>·</span>
+                <span className="truncate max-w-[300px]">{selectedPreset.genre}</span>
+              </div>
               <Button
                 onClick={() => createMutation.mutate()}
-                disabled={!conceptDraft.trim() || createMutation.isPending}
-                className="w-full"
+                disabled={createMutation.isPending}
                 size="sm"
               >
                 {createMutation.isPending ? "…" : "Create"}
               </Button>
             </div>
-          </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-5 space-y-1.5">
+                <Label htmlFor="suno-concept">Custom Concept</Label>
+                <Input
+                  id="suno-concept"
+                  placeholder="type your own vibe…"
+                  value={conceptDraft}
+                  onChange={(e) => setConceptDraft(e.target.value)}
+                />
+              </div>
+              <div className="md:col-span-3 space-y-1.5">
+                <Label htmlFor="suno-chakra">Chakra</Label>
+                <Select
+                  value={chakraDraft}
+                  onValueChange={(v) => setChakraDraft(v as SunoChakra)}
+                >
+                  <SelectTrigger id="suno-chakra">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SUNO_CHAKRAS.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c} · {SUNO_CHAKRA_FREQUENCIES[c]} Hz
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="md:col-span-3 space-y-1.5">
+                <Label htmlFor="suno-genre">Genre</Label>
+                <Input
+                  id="suno-genre"
+                  placeholder="ambient, dark hip-hop…"
+                  value={genreDraft}
+                  onChange={(e) => setGenreDraft(e.target.value)}
+                />
+              </div>
+              <div className="md:col-span-1">
+                <Button
+                  onClick={() => createMutation.mutate()}
+                  disabled={!conceptDraft.trim() || createMutation.isPending}
+                  className="w-full"
+                  size="sm"
+                >
+                  {createMutation.isPending ? "…" : "Go"}
+                </Button>
+              </div>
+            </div>
+          )}
           {createMutation.error && (
             <p className="text-xs text-destructive mt-2">
               {createMutation.error instanceof Error
@@ -223,6 +304,9 @@ export function SunoPipeline() {
       )}
 
       <ChakraFrequencyMap issues={issues ?? []} />
+
+      {/* Archangel Agent Bar — shows the pipeline agents in order */}
+      <ArchangelAgentBar issues={issues ?? []} />
 
       {isLoading ? (
         <div className="text-sm text-muted-foreground">Loading pipeline…</div>
@@ -248,6 +332,77 @@ export function SunoPipeline() {
     </div>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Archangel Agent Bar                                                       */
+/* -------------------------------------------------------------------------- */
+
+interface ArchangelAgentBarProps {
+  issues: SunoIssue[];
+}
+
+/**
+ * Horizontal scrollable row of archangel "tarot cards" displayed above the
+ * kanban board. Each card features the agent's sacred geometry avatar at xl
+ * size, their name, Kabbalistic sphere, role, and domain description.
+ */
+function ArchangelAgentBar({ issues }: ArchangelAgentBarProps) {
+  const hasGenerating = issues.some((i) => i.status === "GENERATING");
+
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none">
+      {PIPELINE_AGENTS.map((agent, idx) => (
+        <div
+          key={agent.name}
+          className={cn(
+            "group relative flex flex-col items-center gap-2 min-w-[120px] w-[120px] shrink-0",
+            "rounded-xl border border-border/40 bg-gradient-to-b from-card/80 to-card/40",
+            "px-3 pt-4 pb-3 transition-all duration-200",
+            "hover:border-foreground/20 hover:shadow-lg hover:shadow-black/20 hover:-translate-y-0.5",
+            hasGenerating && "border-blue-500/30",
+          )}
+        >
+          {/* Order badge */}
+          <span className="absolute top-1.5 left-2 text-[9px] font-mono text-muted-foreground/50">
+            {String(idx + 1).padStart(2, "0")}
+          </span>
+
+          {/* Avatar — xl size (96px) with sacred geometry halo */}
+          <ArchangelAvatar
+            name={agent.name}
+            size="xl"
+            working={hasGenerating}
+          />
+
+          {/* Name */}
+          <span className="text-sm font-semibold tracking-tight text-center leading-tight">
+            {agent.name}
+          </span>
+
+          {/* Sphere — kabbalistic attribution */}
+          <span className="text-[10px] font-medium text-muted-foreground/70 uppercase tracking-widest">
+            {agent.sphere}
+          </span>
+
+          {/* Role divider */}
+          <div className="w-8 h-px bg-border/60" />
+
+          {/* Role + Domain */}
+          <span className="text-[11px] font-medium text-foreground/80 text-center">
+            {agent.role}
+          </span>
+          <span className="text-[9px] text-muted-foreground text-center leading-snug line-clamp-2">
+            {agent.domain}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Kanban Column                                                             */
+/* -------------------------------------------------------------------------- */
 
 interface SunoColumnProps {
   status: SunoStatus;

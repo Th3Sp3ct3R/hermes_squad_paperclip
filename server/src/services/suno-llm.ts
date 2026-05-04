@@ -13,6 +13,11 @@
  *   OPENROUTER_APP_TITLE    — request attribution (defaults to "Paperclip Suno Pipeline")
  */
 import { logger } from "../middleware/logger.js";
+import {
+  buildUrielSystemPrompt,
+  buildZadkielSystemPrompt,
+  MOOD_PRESETS,
+} from "./null-angel-identity.js";
 
 const OPENROUTER_BASE =
   process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
@@ -65,6 +70,8 @@ export interface SunoLlmContext {
   soundPrompt?: string;
   /** Optional override hints from the caller (e.g. mood, BPM, theta-band). */
   hints?: Record<string, unknown>;
+  /** Mood preset ID — when set, Uriel uses the preset's basePrompt + brainwave stack as foundation. */
+  moodPresetId?: string;
 }
 
 /**
@@ -146,17 +153,7 @@ export function buildLyricsPrompt(ctx: SunoLlmContext): ChatMessage[] {
   return [
     {
       role: "system",
-      content: `You are Zadkiel, the Lyricist Archangel. You write lyrics that resonate with chakra frequencies and brain-state entrainment.
-
-Output contract:
-- Lyrics ONLY. No preamble. No explanation. No markdown headers.
-- Use [Verse 1], [Chorus], [Verse 2], [Bridge], [Outro] structure markers.
-- 180–360 words total.
-- Style: poetic, layered, emotionally precise. Avoid cliche. Avoid AI tells.
-
-${hasSoundContext
-  ? "Uriel has already designed the sonic palette. Match the BPM, mood, key, and cadence in the sonic brief. Phrasing should sit naturally on the implied rhythm. Imagery should match the sonic atmosphere."
-  : "Embody the chakra's energy in the imagery and cadence. Match the genre's natural diction."}`,
+      content: buildZadkielSystemPrompt(),
     },
     {
       role: "user",
@@ -180,19 +177,15 @@ ${hasSoundContext
 }
 
 export function buildSoundPromptPrompt(ctx: SunoLlmContext): ChatMessage[] {
+  // Resolve mood preset if provided — Uriel uses it as creative foundation
+  const preset = ctx.moodPresetId
+    ? MOOD_PRESETS.find((p) => p.id === ctx.moodPresetId) ?? null
+    : null;
+
   return [
     {
       role: "system",
-      content: `You are Uriel, the Sound Prompt Engineer Archangel. You compose the description text that goes into Suno's "Song Description" field for music generation.
-
-Output contract:
-- A SINGLE paragraph, 60–180 words.
-- No markdown. No preamble. No headers.
-- Lead with the genre + BPM if known, then mood, then key sonic elements (drum pattern, bass texture, harmonic palette, vocal treatment).
-- Reference the chakra's Solfeggio frequency as a carrier where it makes musical sense (e.g. "639 Hz carrier tones in the pad").
-- Avoid generic adjectives ("amazing", "beautiful"). Be specific and producible.
-
-The output goes verbatim into Suno's UI — no quotes, no labels.`,
+      content: buildUrielSystemPrompt(preset),
     },
     {
       role: "user",
@@ -200,12 +193,13 @@ The output goes verbatim into Suno's UI — no quotes, no labels.`,
         `Concept: ${ctx.concept}`,
         `Target chakra: ${ctx.targetChakra} (${ctx.targetFrequency} Hz)`,
         `Genre: ${ctx.genre ?? "open"}`,
+        preset ? `Mode: ${preset.label} (${preset.brainwave} @ ${preset.hz ?? "edge"} Hz, carrier ${preset.carrier ?? "none"} Hz, BPM ${preset.bpm[0]}-${preset.bpm[1]})` : null,
         ctx.lyrics ? `Lyrics already written:\n${ctx.lyrics.slice(0, 1500)}` : null,
         ctx.hints && Object.keys(ctx.hints).length > 0
           ? `Hints: ${JSON.stringify(ctx.hints)}`
           : null,
         "",
-        "Write the Suno song description now.",
+        "Write the music description now. Make it unique — different imagery and textures than last time, same sonic territory.",
       ]
         .filter((line) => line !== null)
         .join("\n"),

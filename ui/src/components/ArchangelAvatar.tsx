@@ -22,11 +22,12 @@ import {
   type ArchangelName,
 } from "./SacredGeometry";
 
-const SIZE_PX: Record<"xs" | "sm" | "md" | "lg", number> = {
+const SIZE_PX: Record<"xs" | "sm" | "md" | "lg" | "xl", number> = {
   xs: 20,
   sm: 28,
   md: 40,
   lg: 64,
+  xl: 96,
 };
 
 const FRAME_SCALE = 1.6; // halo larger than portrait
