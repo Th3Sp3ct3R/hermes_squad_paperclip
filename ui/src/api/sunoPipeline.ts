@@ -351,6 +351,28 @@ export const sunoPipelineApi = {
       companyId,
       ...input,
     }),
+
+  /** Ruling angel LLM-refines the user's free-text into a structured concept. Preview only. */
+  angelRefine: (companyId: string, input: AngelRefineInput) =>
+    api.post<AngelRefineResult>("/suno-pipeline/angel-refine", {
+      companyId,
+      ...input,
+    }),
+
+  // ── Batch progress (Phase 10) ──────────────────────────────────────────
+  /** List all batches for a company with per-batch progress counts. */
+  batches: (companyId: string) =>
+    api.get<BatchSummary[]>(withQuery("/suno-pipeline/batches", { companyId })),
+  /** Fire pending issues in a batch through the music backend. Returns 202. */
+  executeBatch: (
+    batchId: string,
+    companyId: string,
+    input: ExecuteBatchInput = {},
+  ) =>
+    api.post<ExecuteBatchResult>(
+      `/suno-pipeline/batch/${encodeURIComponent(batchId)}/execute`,
+      { companyId, ...input },
+    ),
 };
 
 // ── Phase 8 generation input ───────────────────────────────────────────────
@@ -408,4 +430,51 @@ export interface AutoRunResult {
   readyForReview: boolean;
   /** When readyForReview is false, lists which deposits are still missing. */
   missingStages: string[];
+}
+
+// ── Angel Refine (ruling angel LLM-mediated concept refinement) ─────────
+
+export interface AngelRefineInput {
+  chakra: SunoChakra;
+  rulingAngel: string;
+  userInput: string;
+  presetId?: string;
+  presetConcept?: string;
+  presetGenre?: string;
+}
+
+export interface AngelRefineResult {
+  concept: string;
+  genre: string;
+  targetChakra: SunoChakra;
+  targetFrequency: number;
+  rationale: string;
+}
+
+// ── Batch progress (Phase 10 — batch pipeline visibility) ───────────────
+
+export interface BatchSummary {
+  batchId: string;
+  masterConcept: string;
+  batchRequest: string;
+  total: number;
+  ready: number;
+  pending: number;
+  failed: number;
+  createdAt: string;
+  targetChakra: string | null;
+}
+
+export interface ExecuteBatchInput {
+  musicBackend?: "minimax" | "suno";
+  concurrency?: number;
+}
+
+export interface ExecuteBatchResult {
+  batchId: string;
+  backend: string;
+  concurrency: number;
+  totalSiblings: number;
+  executing: number;
+  message: string;
 }

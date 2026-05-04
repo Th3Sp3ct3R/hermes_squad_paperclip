@@ -20,6 +20,8 @@ import {
 
 interface ChakraFrequencyMapProps {
   issues: SunoIssue[];
+  /** Fired when a chakra cell is clicked — opens the invocation dialog. */
+  onChakraClick?: (chakra: SunoChakra) => void;
   /** Optional className passthrough for layout containment. */
   className?: string;
 }
@@ -45,7 +47,7 @@ const CHAKRA_LABEL: Record<SunoChakra, string> = {
   CROWN: "Crown",
 };
 
-export function ChakraFrequencyMap({ issues, className }: ChakraFrequencyMapProps) {
+export function ChakraFrequencyMap({ issues, onChakraClick, className }: ChakraFrequencyMapProps) {
   const counts = useMemo(() => {
     const out = Object.fromEntries(
       SUNO_CHAKRAS.map((c) => [c, 0]),
@@ -72,12 +74,16 @@ export function ChakraFrequencyMap({ issues, className }: ChakraFrequencyMapProp
           const count = counts[chakra];
           const isCovered = count > 0;
           return (
-            <div
+            <button
+              type="button"
               key={chakra}
+              onClick={() => onChakraClick?.(chakra)}
               className={cn(
-                "rounded-md border p-3 transition-opacity",
+                "rounded-md border p-3 text-left transition-all",
                 CHAKRA_TONE[chakra],
                 isCovered ? "opacity-100" : "opacity-50",
+                onChakraClick &&
+                  "cursor-pointer hover:ring-1 hover:ring-current hover:scale-[1.02]",
               )}
               data-chakra={chakra}
               data-count={count}
@@ -91,7 +97,7 @@ export function ChakraFrequencyMap({ issues, className }: ChakraFrequencyMapProp
               <div className="text-xs tabular-nums opacity-80">
                 {count} {count === 1 ? "song" : "songs"}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>

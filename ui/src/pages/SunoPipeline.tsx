@@ -12,14 +12,15 @@
  * The page reads from /api/suno-pipeline (TanStack Query) and writes via
  * the same client. Mutations go through the standard activity-log pipeline.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Music, Plus, X, Sparkles, Users, Layers } from "lucide-react";
+import { Plus, X, Sparkles, Layers } from "lucide-react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Button } from "@/components/ui/button";
 import { AngelChamberDialog } from "@/components/AngelChamberDialog";
+import { AngelInvocationDialog } from "@/components/AngelInvocationDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
@@ -39,12 +40,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChakraFrequencyMap } from "@/components/ChakraFrequencyMap";
+import { BatchProgressPanel } from "@/components/BatchProgressPanel";
 import { ArchangelAvatar, ArchangelAvatarStack } from "@/components/ArchangelAvatar";
 import { ChakraYantra, type ArchangelName, type ChakraKey } from "@/components/SacredGeometry";
 import { useAudioAmplitude } from "@/lib/useAudioAmplitude";
 import { cn } from "@/lib/utils";
+import { numberToWords, capitalizeFirst } from "@/lib/numberToWords";
 import { agentsApi } from "@/api/agents";
-import { agentMessagesApi } from "@/api/agentMessages";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   sunoPipelineApi,
@@ -108,32 +110,6 @@ const MOOD_PRESET_CHIPS = [
   { id: "dark-piano", label: "Dark Piano", emoji: "\u{2644}", concept: "Sparse, slow piano notes played in a dark ambient space.", targetChakra: "HEART" as SunoChakra, genre: "dark piano, ambient luxury" },
   { id: "pre-sleep", label: "Pre-Sleep", emoji: "\u{1F703}", concept: "Ultra-minimal ambient soundscape designed for late-night listening and subconscious learning.", targetChakra: "CROWN" as SunoChakra, genre: "ultra-minimal, dark ambient, near-silence" },
   { id: "sleep", label: "Sleep", emoji: "\u{1F311}", concept: "Ultra-minimalist dark ambient soundscape designed for neural shutdown.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, sleep music, deep space, minimal electronic" },
-];
-
-// ── Council messaging constants ─────────────────────────────────────────────
-const COMPANY_ID = "af4ca647-81cb-4dc2-98f1-d54136391505";
-const FROM_USER_ID = "julian@growthgod.com";
-
-/** The 10 main archangels (excluding Azrael) available for council summons. */
-const COUNCIL_AGENTS: { name: string; id: string }[] = [
-  { name: "Cassiel",    id: "01c3cee8-da9e-4689-98d4-95fe6e9db9f8" },
-  { name: "Uriel",     id: "1cab8b03-789b-435f-b132-e6ace1e38077" },
-  { name: "Jophiel",   id: "cbb25fcb-b22a-4f2f-9a99-a7954072ee66" },
-  { name: "Raziel",    id: "a6e4f405-ce0b-41fb-a7be-1e748b3a86aa" },
-  { name: "Gabriel",   id: "dfedb8f1-c934-4651-8291-668504a63b35" },
-  { name: "Metatron",  id: "34b4aa4b-7e04-42f4-9c15-0a99f7191ce1" },
-  { name: "Zadkiel",   id: "ea3d1ec5-ee21-4662-9c2b-cc3ad39a2f9c" },
-  { name: "Raphael",   id: "08f2f594-3573-4e6f-b643-20ae5377ca5c" },
-  { name: "Sandalphon",id: "8fab7522-4545-463d-a5e4-6bffaa80bd1c" },
-  { name: "Michael",   id: "85535ca2-0f31-41b2-bab1-618801945937" },
-];
-
-/** Rotating council summons prompts — round-robin per invocation. */
-const COUNCIL_PROMPTS = [
-  "What do you want to learn today?",
-  "What are you working on right now?",
-  "What needs your attention in the pipeline?",
-  "Report your current status and next action.",
 ];
 
 // ── Batch generation presets (CLAUDE.md MOOD_PRESETS + 4 extras) ──────────────
@@ -256,6 +232,8 @@ const PIPELINE_AGENTS: { name: ArchangelName; role: string; sphere: string; doma
   { name: "Metatron", role: "Timeline", sphere: "Keter", domain: "Activity log & celestial scribe" },
 ];
 
+const ALBEDO_PAGE = { yellow: "#FFD700" };
+
 const sunoQueryKey = (companyId: string) => ["suno-pipeline", companyId] as const;
 
 export function SunoPipeline() {
@@ -269,47 +247,11 @@ export function SunoPipeline() {
   const [chakraDraft, setChakraDraft] = useState<SunoChakra>("HEART");
   const [genreDraft, setGenreDraft] = useState("");
 
-  // ── Task A: Council summons state ───────────────────────────────────────
-  const [councilPending, setCouncilPending] = useState(false);
-  const councilPromptIndexRef = useRef(0);
-
-  /** Send a "request" message to every archangel in the council. */
-  const invokeCouncil = async () => {
-    if (councilPending) return;
-    const companyId = selectedCompanyId ?? COMPANY_ID;
-    setCouncilPending(true);
-    try {
-      const promptIndex = councilPromptIndexRef.current % COUNCIL_PROMPTS.length;
-      councilPromptIndexRef.current += 1;
-      const body = COUNCIL_PROMPTS[promptIndex]!;
-      let dispatched = 0;
-      for (const agent of COUNCIL_AGENTS) {
-        await agentMessagesApi.send({
-          companyId,
-          fromUserId: FROM_USER_ID,
-          toAgentId: agent.id,
-          kind: "request",
-          subject: "Council Summons",
-          body,
-        });
-        dispatched += 1;
-      }
-      pushToast({
-        tone: "success",
-        title: "Council summoned",
-        body: `Sent to ${dispatched} archangels: "${body}"`,
-        ttlMs: 6000,
-      });
-    } catch (err) {
-      pushToast({
-        tone: "error",
-        title: "Council summons failed",
-        body: err instanceof Error ? err.message : "Unknown error",
-      });
-    } finally {
-      setCouncilPending(false);
-    }
-  };
+  // ── Angel Invocation Dialog state ──────────────────────────────────────
+  const [invocationOpen, setInvocationOpen] = useState(false);
+  const [invocationChakra, setInvocationChakra] = useState<SunoChakra>("HEART");
+  const [invocationConcept, setInvocationConcept] = useState<string>();
+  const [invocationGenre, setInvocationGenre] = useState<string>();
 
   // ── Task B: Batch sphere generation state ────────────────────────────────
   const [batchRunning, setBatchRunning] = useState(false);
@@ -366,7 +308,7 @@ export function SunoPipeline() {
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Hermetica" }]);
+    setBreadcrumbs([{ label: "The Hermetic Opera" }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
@@ -392,7 +334,7 @@ export function SunoPipeline() {
       if (!selectedCompanyId) throw new Error("No company selected");
       return sunoPipelineApi.create(selectedCompanyId, {
         concept: conceptDraft.trim(),
-        targetChakra: chakraDraft,
+        targetChakra: "HEART" as SunoChakra,
         genre: genreDraft.trim() || null,
       });
     },
@@ -457,7 +399,7 @@ export function SunoPipeline() {
               }}
             >
               <span aria-hidden style={{ marginRight: "0.4rem" }}>⚕</span>
-              Hermetica
+              The Hermetic Opera
             </h1>
             <p
               className="text-sm mt-1.5 italic"
@@ -469,32 +411,24 @@ export function SunoPipeline() {
             >
               The harmony of the spheres, made audible.
             </p>
+            <p
+              className="text-xs mt-0.5 tabular-nums"
+              style={{
+                color: "rgba(192,192,192,0.6)",
+                letterSpacing: "0.02em",
+              }}
+            >
+              {(issues?.length ?? 0) > 0
+                ? `${capitalizeFirst(numberToWords(issues?.length ?? 0))} opera and counting.`
+                : "The first opus awaits."}
+            </p>
           </div>
         </div>
         {/* Header actions:
             - "Consult the Council" opens the Angel Chamber ritual flow.
-            - "Invoke the Council" broadcasts summons messages to all 10 archangels.
             - "Invoke the Spheres" batch-creates + auto-runs all mood presets.
             - "Begin Opus" opens the bare single-concept form. */}
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          {/* Task A: Invoke the Council — broadcast messages to all archangels */}
-          <Button
-            onClick={invokeCouncil}
-            disabled={councilPending}
-            size="sm"
-            style={{
-              backgroundColor: councilPending ? "rgba(139,92,246,0.3)" : "#7c3aed",
-              color: "#FFFFFF",
-              borderColor: "#a78bfa",
-              boxShadow:
-                "0 0 14px rgba(124,58,237,0.45), inset 0 0 10px rgba(167,139,250,0.15)",
-              opacity: councilPending ? 0.7 : 1,
-            }}
-          >
-            <Users className="h-4 w-4 mr-1" />
-            {councilPending ? "Summoning…" : "Invoke the Council"}
-          </Button>
-
           {/* Task B: Invoke the Spheres — batch create + auto-run all presets */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -561,18 +495,8 @@ export function SunoPipeline() {
           <Button
             onClick={() => setShowCreate((v) => !v)}
             size="sm"
-            variant={showCreate ? "ghost" : "default"}
-            style={
-              showCreate
-                ? { color: "#C0C0C0" }
-                : {
-                    backgroundColor: "#FFFFFF",
-                    color: "#000000",
-                    borderColor: "#C0C0C0",
-                    boxShadow:
-                      "0 0 12px rgba(255,255,255,0.35), inset 0 0 8px rgba(192,192,192,0.2)",
-                  }
-            }
+            variant="ghost"
+            style={{ color: showCreate ? ALBEDO_PAGE.yellow : "#C0C0C0" }}
           >
             {showCreate ? <X className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
             {showCreate ? "Cancel" : "Begin Opus"}
@@ -593,6 +517,22 @@ export function SunoPipeline() {
         />
       )}
 
+      {/* Angel Invocation — single-song ritual modal opened from
+          chakra cells or mood preset chips. */}
+      {selectedCompanyId && (
+        <AngelInvocationDialog
+          open={invocationOpen}
+          onOpenChange={setInvocationOpen}
+          companyId={selectedCompanyId}
+          chakra={invocationChakra}
+          preloadedConcept={invocationConcept}
+          preloadedGenre={invocationGenre}
+          onDispatched={() =>
+            queryClient.invalidateQueries({ queryKey: sunoQueryKey(selectedCompanyId) })
+          }
+        />
+      )}
+
       {showCreate && (
         <Card className="p-4 space-y-4">
           {/* ── Mood Preset Chips ── */}
@@ -603,15 +543,14 @@ export function SunoPipeline() {
                 <button
                   key={preset.id}
                   onClick={() => {
-                    setConceptDraft(preset.concept);
-                    setChakraDraft(preset.targetChakra);
-                    setGenreDraft(preset.genre);
+                    setInvocationChakra(preset.targetChakra);
+                    setInvocationConcept(preset.concept);
+                    setInvocationGenre(preset.genre);
+                    setInvocationOpen(true);
                   }}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors",
-                    conceptDraft === preset.concept
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border/50 bg-card/50 text-foreground hover:bg-accent hover:border-foreground/20",
+                    "border-border/50 bg-card/50 text-foreground hover:bg-accent hover:border-foreground/20",
                   )}
                 >
                   <span>{preset.emoji}</span>
@@ -642,7 +581,7 @@ export function SunoPipeline() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-              <div className="md:col-span-5 space-y-1.5">
+              <div className="md:col-span-7 space-y-1.5">
                 <Label htmlFor="suno-concept">Custom Concept</Label>
                 <Input
                   id="suno-concept"
@@ -651,25 +590,7 @@ export function SunoPipeline() {
                   onChange={(e) => setConceptDraft(e.target.value)}
                 />
               </div>
-              <div className="md:col-span-3 space-y-1.5">
-                <Label htmlFor="suno-chakra">Chakra</Label>
-                <Select
-                  value={chakraDraft}
-                  onValueChange={(v) => setChakraDraft(v as SunoChakra)}
-                >
-                  <SelectTrigger id="suno-chakra">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SUNO_CHAKRAS.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c} · {SUNO_CHAKRA_FREQUENCIES[c]} Hz
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="md:col-span-3 space-y-1.5">
+              <div className="md:col-span-4 space-y-1.5">
                 <Label htmlFor="suno-genre">Genre</Label>
                 <Input
                   id="suno-genre"
@@ -700,7 +621,18 @@ export function SunoPipeline() {
         </Card>
       )}
 
-      <ChakraFrequencyMap issues={issues ?? []} />
+      <ChakraFrequencyMap
+        issues={issues ?? []}
+        onChakraClick={(chakra) => {
+          setInvocationChakra(chakra);
+          setInvocationConcept(undefined);
+          setInvocationGenre(undefined);
+          setInvocationOpen(true);
+        }}
+      />
+
+      {/* Batch Progress — per-batch cards with progress bars + execute buttons */}
+      {selectedCompanyId && <BatchProgressPanel companyId={selectedCompanyId} />}
 
       {/* Archangel Agent Bar — shows the pipeline agents in order */}
       <ArchangelAgentBar issues={issues ?? []} />

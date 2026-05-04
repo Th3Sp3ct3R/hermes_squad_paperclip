@@ -76,6 +76,7 @@ import {
   MOOD_PRESETS,
   type ChakraKey,
 } from "../services/null-angel-identity.js";
+import { angelRefine } from "../services/angel-refine.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
 
@@ -244,6 +245,17 @@ const dispatchSunoSchema = z.object({
   companyId: z.string().uuid(),
   /** Override the prompt (defaults to metadata.stages.soundPrompt). */
   prompt: z.string().min(1).max(2000).optional(),
+});
+
+/** Angel Refine — ruling angel LLM-refines user's free-text into a structured concept. */
+const angelRefineSchema = z.object({
+  companyId: z.string().uuid(),
+  chakra: chakraSchema,
+  rulingAngel: z.string().min(1),
+  userInput: z.string().min(1).max(2000),
+  presetId: z.string().optional(),
+  presetConcept: z.string().max(2000).optional(),
+  presetGenre: z.string().max(400).optional(),
 });
 
 /** Phase 10 — Day-plan ritual (Hermes asks the user about their day, prescribes
@@ -1996,6 +2008,31 @@ export function sunoPipelineRoutes(db: Db) {
   //   →  user confirms
   //   →  one batch per block fires
   // ──────────────────────────────────────────────────────────────────────
+
+  // ── POST /angel-refine ──────────────────────────────────────────────
+  // Angel Invocation — ruling angel LLM-refines the user's free-text
+  // "materia" into a structured concept. No state mutated — preview only.
+  // After the user confirms, the frontend calls create + auto-run.
+  router.post(
+    "/suno-pipeline/angel-refine",
+    validate(angelRefineSchema),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof angelRefineSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const result = await angelRefine(
+        {
+          chakra: body.chakra,
+          rulingAngel: body.rulingAngel,
+          userInput: body.userInput,
+          presetId: body.presetId,
+          presetConcept: body.presetConcept,
+          presetGenre: body.presetGenre,
+        },
+        { db, companyId: body.companyId },
+      );
+      res.json(result);
+    },
+  );
 
   // ── POST /day-plan/parse ─────────────────────────────────────────────
   // Hermes asks first ("What are we composing today?"), reads the user's
