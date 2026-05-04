@@ -26,6 +26,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { startCassielWatcher } from "./services/cassiel-watcher.js";
 import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -510,6 +511,23 @@ export async function startServer(): Promise<StartedServer> {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
   });
+
+  // Cassiel — Saturn-archangel of time, watcher of stuck batches. Scans
+  // every 5 minutes for issues stuck in GENERATING with no audio, hard-
+  // fails anything stuck > 6h, and emits stuck-batch-detected events
+  // for the dashboard. Each scan attaches to a heartbeat_runs row so
+  // Cassiel's "last pulse" is real telemetry, not cosmetic.
+  const cassielCompanyId = process.env.PAPERCLIP_CASSIEL_COMPANY_ID ?? "";
+  if (cassielCompanyId) {
+    startCassielWatcher(db as any, {
+      companyId: cassielCompanyId,
+      intervalMinutes: Number(process.env.PAPERCLIP_CASSIEL_INTERVAL_MIN ?? 5),
+    });
+  } else {
+    logger.info(
+      "[cassiel] PAPERCLIP_CASSIEL_COMPANY_ID not set — watcher idle. Set this env to your company UUID to enable stuck-batch reaping.",
+    );
+  }
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {

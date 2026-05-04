@@ -70,6 +70,7 @@ import {
   CHAKRA_ANGEL,
   type DayPlan,
 } from "../services/day-plan.js";
+import { withArchangelRun } from "../services/archangel-heartbeat.js";
 import {
   buildMiniMaxPrompt,
   MOOD_PRESETS,
@@ -3197,39 +3198,54 @@ export function sunoPipelineRoutes(db: Db) {
       messages[0] = { role: "system", content: overrides.systemPrompt };
     }
 
-    const raw = await callOpenRouter({
-      model,
-      messages,
-      maxTokens: args.maxTokens,
-      context: {
+    // Wrap the LLM call in an archangel heartbeat so the dashboard sees this
+    // archangel actually doing work — heartbeat_runs row, lifecycle events,
+    // agents.status flip running→idle, agent_runtime_state.updatedAt bumped.
+    return withArchangelRun(
+      {
         db,
         companyId: args.companyId,
-        stage: args.stage,
+        archangelName: args.archangelName,
+        action: `generate.${args.stage}`,
         sunoIssueId: args.issue.id,
+        contextSnapshot: { stage: args.stage, model, concept: args.issue.concept.slice(0, 200) },
       },
-    });
-    let output: string | Record<string, unknown> = raw;
-    if (args.parseJson) {
-      try {
-        const cleaned = raw
-          .replace(/^```(?:json)?\s*/i, "")
-          .replace(/```\s*$/i, "")
-          .trim();
-        output = JSON.parse(cleaned);
-      } catch (err) {
-        output = { raw, parseError: err instanceof Error ? err.message : String(err) };
-      }
-    }
+      async () => {
+        const raw = await callOpenRouter({
+          model,
+          messages,
+          maxTokens: args.maxTokens,
+          context: {
+            db,
+            companyId: args.companyId,
+            stage: args.stage,
+            sunoIssueId: args.issue.id,
+          },
+        });
+        let output: string | Record<string, unknown> = raw;
+        if (args.parseJson) {
+          try {
+            const cleaned = raw
+              .replace(/^```(?:json)?\s*/i, "")
+              .replace(/```\s*$/i, "")
+              .trim();
+            output = JSON.parse(cleaned);
+          } catch (err) {
+            output = { raw, parseError: err instanceof Error ? err.message : String(err) };
+          }
+        }
 
-    return persistGeneratedStage({
-      issue: args.issue,
-      companyId: args.companyId,
-      stage: args.stage,
-      output,
-      agentName: args.archangelName,
-      actor: args.actor,
-      model,
-    });
+        return persistGeneratedStage({
+          issue: args.issue,
+          companyId: args.companyId,
+          stage: args.stage,
+          output,
+          agentName: args.archangelName,
+          actor: args.actor,
+          model,
+        });
+      },
+    );
   }
 
   // ── POST /:id/auto-run ────────────────────────────────────────────────────
@@ -3793,11 +3809,12 @@ export function sunoPipelineRoutes(db: Db) {
     const finalStages = (finalMeta.stages && typeof finalMeta.stages === "object"
       ? (finalMeta.stages as Record<string, unknown>)
       : {}) as Record<string, unknown>;
+    const hasAudio = issue.audioUrl || issue.minimaxAudioUrl;
     const canReview =
       finalStages.lyrics &&
       finalStages.soundPrompt &&
       finalStages.visualPrompt &&
-      issue.audioUrl;
+      hasAudio;
 
     if (canReview) {
       const [reviewed] = await db
@@ -3831,7 +3848,7 @@ export function sunoPipelineRoutes(db: Db) {
             !finalStages.lyrics ? "lyrics" : null,
             !finalStages.soundPrompt ? "soundPrompt" : null,
             !finalStages.visualPrompt ? "visualPrompt" : null,
-            !issue.audioUrl ? "audioUrl" : null,
+            !hasAudio ? "audio (suno or minimax)" : null,
           ].filter(Boolean),
     });
   });
