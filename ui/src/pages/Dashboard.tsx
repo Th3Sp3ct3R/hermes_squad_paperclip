@@ -24,6 +24,7 @@ import { ArchangelAvatar } from "@/components/ArchangelAvatar";
 import { CaduceusMark } from "@/components/CaduceusMark";
 import { HermeticPanelsRow } from "@/components/dashboard/HermeticPanels";
 import { MechanismRow } from "@/components/dashboard/HermeticMechanism";
+import { TelemetryRow } from "@/components/dashboard/HermeticTelemetry";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { WorkspacePulse } from "../components/dashboard/WorkspacePulse";
 import { AgentActivityBar } from "../components/dashboard/AgentActivityBar";
@@ -636,6 +637,14 @@ export function Dashboard() {
 
           {/* ── The Celestial Mechanism: Planetary Hour + Heptachord + Monochord ── */}
           <MechanismRow sunoIssues={sunoIssues ?? null} />
+
+          {/* ── The Telemetry: Aspect Grid + Kerykeion live message graph ── */}
+          <TelemetryRow
+            activity={activity ?? null}
+            agentIdToName={
+              new Map((agents ?? []).map((a) => [a.id, a.name]))
+            }
+          />
 
           {/* ── Songs Metrics · Brainwave Tuning · Chakra Roots ─────────── */}
           <SongsMetricsPanel companyId={selectedCompanyId!} />
