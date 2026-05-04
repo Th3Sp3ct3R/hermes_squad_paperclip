@@ -22,6 +22,12 @@ import {
   type SunoIssue,
   type SunoStatus,
 } from "@/api/sunoPipeline";
+// Loads the Cinzel / Geist / Geist Mono / EB Garamond fonts and the
+// design-system CSS variables (--bg, --gold, --line-gold, etc.) plus
+// the .section/.stat-card/.chakra-cell/.opus-card/.sigil-row classes
+// the spec uses. Scoped to .initiates-path-root so it doesn't bleed
+// into other pages.
+import "@/styles/initiates-path.css";
 
 // ── Constants (port of the HTML spec, kept verbatim) ─────────────────
 
@@ -259,7 +265,7 @@ export default function InitiatesPath() {
 
   return (
     <div
-      className="min-h-screen p-8"
+      className="initiates-path-root min-h-screen p-8"
       style={{
         backgroundColor: "#000",
         color: "#fff",

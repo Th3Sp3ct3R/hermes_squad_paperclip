@@ -1,0 +1,658 @@
+/**
+ * Initiate's Path — design system stylesheet.
+ *
+ * Ports the CSS from the user's initiates-path-missing-files.md spec
+ * into Vite. Keeps the original class names so any future component
+ * refactor can drop straight in. Imported globally by /initiate so the
+ * fonts (Cinzel, Geist, Geist Mono, EB Garamond) load and the CSS
+ * variables (--bg, --gold, --line-gold, etc.) are available across the
+ * page.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=EB+Garamond:ital,wght@0,400;1,400&display=swap');
+
+:root {
+  --bg: #000;
+  --bg-1: #0a0a0a;
+  --bg-2: #111;
+  --bg-3: #161616;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --line-gold: rgba(201, 164, 73, 0.25);
+  --text: #fff;
+  --text-2: #a3a3a3;
+  --text-3: #6a6a6a;
+  --text-4: #404040;
+  --gold: #c9a449;
+  --gold-bright: #e8c46a;
+  --blue: #3b82f6;
+  --purple: #c084fc;
+  --magenta: #d946ef;
+  --red: #ef4444;
+  --green: #10b981;
+  --amber: #f59e0b;
+}
+
+/* Scope to the Initiate's Path page only — the design tokens above are
+   global custom properties (which is fine — they don't override anything),
+   but the .section, .stat-card etc class styles are scoped behind
+   .initiates-path-root so they don't leak into other pages. */
+.initiates-path-root {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Geist', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* SECTION CHROME */
+.initiates-path-root .section {
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+.initiates-path-root .section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.initiates-path-root .section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.initiates-path-root .section-title::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--text-2);
+  border-radius: 1px;
+}
+.initiates-path-root .section-title strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.initiates-path-root .section-meta {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+.initiates-path-root .section-meta strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* HERO STAT CARDS */
+.initiates-path-root .hero-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.initiates-path-root .stat-card {
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  border-radius: 4px;
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+}
+.initiates-path-root .stat-card .label {
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--text-3);
+  text-transform: uppercase;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.initiates-path-root .stat-card .label::before {
+  content: '';
+  width: 3px;
+  height: 11px;
+  background: var(--text-3);
+  border-radius: 1px;
+}
+.initiates-path-root .stat-card .big {
+  font-size: 36px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.initiates-path-root .stat-card .big .unit {
+  font-size: 14px;
+  color: var(--text-3);
+  margin-left: 4px;
+  font-weight: 400;
+}
+.initiates-path-root .stat-card .sub {
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+  margin-top: 8px;
+  text-transform: uppercase;
+}
+.initiates-path-root .stat-card .sub .accent {
+  color: var(--gold);
+}
+.initiates-path-root .stat-card.gold {
+  border-color: var(--line-gold);
+}
+.initiates-path-root .stat-card.gold .label::before {
+  background: var(--gold);
+}
+.initiates-path-root .stat-card.gold .big {
+  color: var(--gold-bright);
+}
+.initiates-path-root .stat-card.purple .big {
+  color: var(--purple);
+}
+.initiates-path-root .stat-card.green .big {
+  color: var(--green);
+}
+.initiates-path-root .stat-card.gate {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.06), var(--bg-1));
+}
+.initiates-path-root .stat-card.gate .label::before {
+  background: var(--red);
+}
+.initiates-path-root .stat-card.gate .big {
+  color: var(--red);
+}
+
+/* CHAKRA TUNING */
+.initiates-path-root .chakra-grid {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 12px;
+}
+.initiates-path-root .chakra-cell {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 14px;
+  background: var(--bg-2);
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s;
+}
+.initiates-path-root .chakra-cell:hover {
+  border-color: var(--line-strong);
+}
+.initiates-path-root .chakra-cell.empty {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.04), var(--bg-2));
+}
+.initiates-path-root .chakra-cell.empty::after {
+  content: "DA'ATH";
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.2em;
+  color: var(--red);
+  background: rgba(239, 68, 68, 0.1);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+.initiates-path-root .chakra-name {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--text-3);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.initiates-path-root .chakra-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.initiates-path-root .chakra-hz {
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.initiates-path-root .chakra-count {
+  font-size: 22px;
+  font-weight: 500;
+  margin-top: 8px;
+  line-height: 1;
+}
+.initiates-path-root .chakra-count .unit {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-left: 4px;
+  font-family: 'Geist Mono', monospace;
+}
+.initiates-path-root .chakra-status {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-top: 6px;
+  color: var(--text-3);
+}
+.initiates-path-root .chakra-wave {
+  margin-top: 8px;
+  height: 18px;
+}
+
+/* TREE OF LIFE */
+.initiates-path-root .tree-wrap {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 24px;
+}
+.initiates-path-root .tree-svg {
+  width: 100%;
+  height: auto;
+}
+.initiates-path-root .tree-svg .node {
+  fill: var(--bg-2);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  transition: all 0.3s;
+}
+.initiates-path-root .tree-svg .node.unlocked {
+  fill: rgba(201, 164, 73, 0.18);
+  stroke: var(--gold);
+}
+.initiates-path-root .tree-svg .node.current {
+  fill: var(--gold);
+  stroke: var(--gold-bright);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px var(--gold));
+}
+.initiates-path-root .tree-svg .node.daath {
+  stroke: var(--red);
+  stroke-dasharray: 2 2;
+  fill: rgba(239, 68, 68, 0.08);
+}
+.initiates-path-root .tree-svg .node.daath.unlocked {
+  fill: var(--red);
+  stroke: #f87171;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 8px var(--red));
+}
+.initiates-path-root .tree-svg .lbl {
+  fill: var(--text-3);
+  font-family: 'Geist Mono', monospace;
+  font-size: 7px;
+  text-anchor: middle;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.initiates-path-root .tree-svg .node.unlocked + .lbl,
+.initiates-path-root .tree-svg .node.current + .lbl {
+  fill: var(--text);
+}
+.initiates-path-root .tree-svg .path {
+  stroke: var(--line);
+  stroke-width: 0.8;
+  fill: none;
+}
+.initiates-path-root .tree-svg .path.lit {
+  stroke: var(--gold);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+/* GRADE LADDER */
+.initiates-path-root .grade-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.initiates-path-root .grade-list::-webkit-scrollbar {
+  width: 4px;
+}
+.initiates-path-root .grade-list::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 2px;
+}
+.initiates-path-root .grade-row {
+  display: grid;
+  grid-template-columns: 50px 1fr 95px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.initiates-path-root .grade-row:last-child {
+  border-bottom: none;
+}
+.initiates-path-root .grade-num {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.05em;
+}
+.initiates-path-root .grade-row.unlocked .grade-num {
+  color: var(--gold);
+}
+.initiates-path-root .grade-row.current .grade-num {
+  color: var(--gold-bright);
+  font-weight: 500;
+}
+.initiates-path-root .grade-name {
+  font-family: 'Cinzel', serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.03em;
+}
+.initiates-path-root .grade-row.unlocked .grade-name,
+.initiates-path-root .grade-row.current .grade-name {
+  color: var(--text);
+}
+.initiates-path-root .grade-name .seph {
+  display: block;
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--text-4);
+  margin-top: 2px;
+  font-weight: 400;
+  text-transform: uppercase;
+}
+.initiates-path-root .grade-row.unlocked .grade-name .seph {
+  color: var(--text-3);
+}
+.initiates-path-root .grade-trigger {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--text-4);
+  text-align: right;
+  line-height: 1.4;
+}
+.initiates-path-root .grade-row.current .grade-trigger {
+  color: var(--gold-bright);
+}
+.initiates-path-root .grade-row.unlocked .grade-trigger {
+  color: var(--text-3);
+}
+.initiates-path-root .grade-row.daath {
+  border-color: rgba(239, 68, 68, 0.2);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.05), transparent);
+  margin: 4px -8px;
+  padding: 12px 8px;
+  border-radius: 2px;
+}
+.initiates-path-root .grade-row.daath.unlocked {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.12), transparent);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+.initiates-path-root .grade-row.daath .grade-num,
+.initiates-path-root .grade-row.daath .grade-name,
+.initiates-path-root .grade-row.daath .grade-trigger {
+  color: var(--red);
+}
+.initiates-path-root .grade-row.daath.unlocked .grade-name {
+  color: #f87171;
+}
+
+/* MAGNUM OPUS CARDS */
+.initiates-path-root .opus-grid {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.initiates-path-root .opus-card {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 14px;
+  background: var(--bg-2);
+  transition: border-color 0.3s;
+  position: relative;
+}
+.initiates-path-root .opus-card:hover {
+  border-color: var(--line-strong);
+}
+.initiates-path-root .opus-card.complete {
+  border-color: rgba(201, 164, 73, 0.35);
+  background: linear-gradient(180deg, rgba(201, 164, 73, 0.05), var(--bg-2));
+}
+.initiates-path-root .opus-card.complete::before {
+  content: '✦';
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  color: var(--gold);
+  font-size: 14px;
+  opacity: 0.8;
+}
+.initiates-path-root .opus-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.initiates-path-root .opus-name {
+  font-family: 'Cinzel', serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+}
+.initiates-path-root .opus-chakra {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--text-3);
+  text-transform: uppercase;
+  margin-top: 3px;
+}
+.initiates-path-root .opus-intent {
+  font-family: 'EB Garamond', serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.initiates-path-root .opus-stage-pill {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.initiates-path-root .opus-stage-pill.nigredo {
+  color: var(--text-3);
+  background: rgba(255, 255, 255, 0.05);
+}
+.initiates-path-root .opus-stage-pill.albedo {
+  color: var(--blue);
+  background: rgba(59, 130, 246, 0.1);
+}
+.initiates-path-root .opus-stage-pill.citrinitas {
+  color: var(--amber);
+  background: rgba(245, 158, 11, 0.1);
+}
+.initiates-path-root .opus-stage-pill.rubedo {
+  color: var(--gold-bright);
+  background: rgba(201, 164, 73, 0.12);
+}
+.initiates-path-root .opus-bead {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.initiates-path-root .opus-bead .seg {
+  flex: 1;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 1px;
+  transition: background 0.3s;
+}
+.initiates-path-root .opus-bead .seg.nigredo.on {
+  background: var(--text-2);
+}
+.initiates-path-root .opus-bead .seg.albedo.on {
+  background: var(--blue);
+}
+.initiates-path-root .opus-bead .seg.citrinitas.on {
+  background: var(--amber);
+}
+.initiates-path-root .opus-bead .seg.rubedo.on {
+  background: var(--gold);
+  box-shadow: 0 0 8px var(--gold);
+}
+.initiates-path-root .opus-stages-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'Geist Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  color: var(--text-4);
+  text-transform: uppercase;
+}
+.initiates-path-root .opus-stages-row span.cur {
+  color: var(--text);
+}
+.initiates-path-root .opus-foot {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  color: var(--text-3);
+}
+.initiates-path-root .opus-foot .agent {
+  color: var(--text-2);
+}
+
+/* SIGILS */
+.initiates-path-root .sigil-list {
+  padding: 8px 0;
+}
+.initiates-path-root .sigil-row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  transition: background 0.2s;
+}
+.initiates-path-root .sigil-row:last-child {
+  border-bottom: none;
+}
+.initiates-path-root .sigil-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.initiates-path-root .sigil-icon {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-2);
+}
+.initiates-path-root .sigil-row.earned .sigil-icon {
+  border-color: var(--gold);
+  background: rgba(201, 164, 73, 0.08);
+}
+.initiates-path-root .sigil-row.bonus.earned .sigil-icon {
+  border-color: var(--red);
+  background: rgba(239, 68, 68, 0.08);
+}
+.initiates-path-root .sigil-icon svg {
+  width: 20px;
+  height: 20px;
+  stroke: var(--text-3);
+  fill: none;
+  stroke-width: 1.5;
+}
+.initiates-path-root .sigil-row.earned .sigil-icon svg {
+  stroke: var(--gold-bright);
+}
+.initiates-path-root .sigil-row.bonus.earned .sigil-icon svg {
+  stroke: #f87171;
+}
+.initiates-path-root .sigil-info .name {
+  font-family: 'Cinzel', serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+.initiates-path-root .sigil-row:not(.earned) .sigil-info .name {
+  color: var(--text-3);
+}
+.initiates-path-root .sigil-info .desc {
+  font-family: 'EB Garamond', serif;
+  font-style: italic;
+  font-size: 13px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+.initiates-path-root .sigil-tier {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--text-4);
+  text-transform: uppercase;
+  text-align: right;
+}
+.initiates-path-root .sigil-row.earned .sigil-tier {
+  color: var(--gold);
+}
+.initiates-path-root .sigil-row.bonus.earned .sigil-tier {
+  color: var(--red);
+}
+.initiates-path-root .sigil-time {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--text-4);
+  text-transform: uppercase;
+}
+
+/* RESPONSIVE */
+@media (max-width: 1100px) {
+  .initiates-path-root .hero-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .initiates-path-root .chakra-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .initiates-path-root .opus-grid {
+    grid-template-columns: 1fr;
+  }
+  .initiates-path-root .tree-wrap {
+    grid-template-columns: 1fr;
+  }
+}
