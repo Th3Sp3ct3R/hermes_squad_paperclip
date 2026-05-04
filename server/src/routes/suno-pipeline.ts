@@ -66,6 +66,11 @@ import {
   type BatchPlan,
 } from "../services/suno-batch.js";
 import {
+  parseDayPlan,
+  CHAKRA_ANGEL,
+  type DayPlan,
+} from "../services/day-plan.js";
+import {
   buildMiniMaxPrompt,
   MOOD_PRESETS,
   type ChakraKey,
@@ -238,6 +243,41 @@ const dispatchSunoSchema = z.object({
   companyId: z.string().uuid(),
   /** Override the prompt (defaults to metadata.stages.soundPrompt). */
   prompt: z.string().min(1).max(2000).optional(),
+});
+
+/** Phase 10 — Day-plan ritual (Hermes asks the user about their day, prescribes
+ *  a multi-block frequency progression, then materializes one batch per block). */
+const dayPlanParseSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Free-text description of the day's tasks. */
+  request: z.string().min(3).max(2000),
+});
+
+const dayPlanCreateSchema = z.object({
+  companyId: z.string().uuid(),
+  /** A previously-parsed plan (from /day-plan/parse) the user has confirmed. */
+  plan: z.object({
+    request: z.string(),
+    totalDurationMinutes: z.number(),
+    hostGreeting: z.string().optional(),
+    hostSummary: z.string().optional(),
+    blocks: z
+      .array(
+        z.object({
+          label: z.string().min(1).max(160),
+          durationMinutes: z.number().positive(),
+          targetChakra: chakraSchema,
+          targetFrequency: z.number().int().positive(),
+          genre: z.string(),
+          masterSoundPrompt: z.string().min(1).max(2000),
+          rationale: z.string().optional(),
+        }),
+      )
+      .min(1)
+      .max(20),
+  }),
+  /** Cap the song count per block. Default 50 — enough for a 3-hour block. */
+  maxSongsPerBlock: z.number().int().min(1).max(200).optional(),
 });
 
 /** Phase 9 — NLP batch generation ("10 hours of deep focus music" → N issues). */
@@ -1945,6 +1985,159 @@ export function sunoPipelineRoutes(db: Db) {
       }
 
       res.json(Array.from(byBatch.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    },
+  );
+
+  // ──────────────────────────────────────────────────────────────────────
+  //   PHASE 10 — DAY PLAN (Hermes the host)
+  //   "Deep work 8-12, workout 12-1, wind down 5-6, sleep at 11"
+  //   →  Hermes prescribes chakras + frequencies per block
+  //   →  user confirms
+  //   →  one batch per block fires
+  // ──────────────────────────────────────────────────────────────────────
+
+  // ── POST /day-plan/parse ─────────────────────────────────────────────
+  // Hermes asks first ("What are we composing today?"), reads the user's
+  // tasks, and returns a structured plan with chakra/frequency per block
+  // PLUS the host greeting + summary lines so the UI can render the
+  // ritual chamber feel. No state is mutated yet — this is preview.
+  router.post(
+    "/suno-pipeline/day-plan/parse",
+    validate(dayPlanParseSchema),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof dayPlanParseSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const actor = getActorInfo(req);
+      const plan = await parseDayPlan(
+        { request: body.request },
+        { db, companyId: body.companyId, agentId: actor.agentId },
+      );
+      // Decorate each block with the ruling angel so the UI doesn't need
+      // its own copy of the chakra-angel registry.
+      const decorated = {
+        ...plan,
+        blocks: plan.blocks.map((b) => ({
+          ...b,
+          rulingAngel: CHAKRA_ANGEL[b.targetChakra],
+        })),
+      };
+      res.json(decorated);
+    },
+  );
+
+  // ── POST /day-plan/create ────────────────────────────────────────────
+  // Materialize a confirmed DayPlan as one Suno batch per block. Returns
+  // the list of created batchIds so the UI can poll progress.
+  router.post(
+    "/suno-pipeline/day-plan/create",
+    validate(dayPlanCreateSchema),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof dayPlanCreateSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const actor = getActorInfo(req);
+
+      const dayPlanId = `dayplan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const maxPerBlock = body.maxSongsPerBlock ?? 50;
+      const batchesCreated: Array<{
+        batchId: string;
+        blockLabel: string;
+        chakra: string;
+        durationMinutes: number;
+        songCount: number;
+        firstIssueId: string;
+      }> = [];
+
+      // For each block, compose a batch-parse-style request and create N
+      // issues directly. Skipping /batch/parse's LLM call since the day-plan
+      // already gave us the master prompt; we synthesize variation titles
+      // from the block label + sequence.
+      for (let blockIdx = 0; blockIdx < body.plan.blocks.length; blockIdx++) {
+        const block = body.plan.blocks[blockIdx]!;
+        const songCount = Math.min(
+          maxPerBlock,
+          Math.max(1, Math.ceil(block.durationMinutes / 3.5)),
+        );
+        const batchId = `${dayPlanId}-block${blockIdx + 1}-${Math.random().toString(36).slice(2, 6)}`;
+
+        const valuesToInsert = Array.from({ length: songCount }, (_, songIdx) => ({
+          companyId: body.companyId,
+          concept: `${block.label} · pt ${songIdx + 1}`,
+          targetChakra: block.targetChakra,
+          targetFrequency: block.targetFrequency,
+          genre: block.genre,
+          status: "GENERATING" as SunoStatus,
+          metadata: {
+            stages: { soundPrompt: block.masterSoundPrompt },
+            batchId,
+            batchSequence: songIdx + 1,
+            batchTotal: songCount,
+            batchRequest: body.plan.request,
+            batchMasterConcept: block.label,
+            // Day-plan linkage — every block in the plan shares this id.
+            dayPlanId,
+            dayPlanBlockIndex: blockIdx + 1,
+            dayPlanBlockTotal: body.plan.blocks.length,
+            dayPlanBlockLabel: block.label,
+            dayPlanRationale: block.rationale ?? "",
+            rulingAngel: CHAKRA_ANGEL[block.targetChakra],
+            history: [
+              {
+                stage: "day-plan.created",
+                output: `${block.label} (${block.durationMinutes}m at ${block.targetFrequency} Hz, ${CHAKRA_ANGEL[block.targetChakra].name})`,
+                at: new Date().toISOString(),
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                agentName: `Hermes → ${CHAKRA_ANGEL[block.targetChakra].name}`,
+                status: "GENERATING" as SunoStatus,
+              },
+            ],
+          },
+        }));
+
+        const created = await db.insert(sunoIssues).values(valuesToInsert).returning();
+        if (!created[0]) continue;
+
+        await logActivity(db, {
+          companyId: body.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "suno_issue.day_plan_block_created",
+          entityType: "suno_issue",
+          entityId: created[0].id,
+          details: {
+            dayPlanId,
+            batchId,
+            blockIndex: blockIdx + 1,
+            blockTotal: body.plan.blocks.length,
+            blockLabel: block.label,
+            chakra: block.targetChakra,
+            frequency: block.targetFrequency,
+            durationMinutes: block.durationMinutes,
+            songCount,
+            angelName: CHAKRA_ANGEL[block.targetChakra].name,
+          },
+        });
+
+        batchesCreated.push({
+          batchId,
+          blockLabel: block.label,
+          chakra: block.targetChakra,
+          durationMinutes: block.durationMinutes,
+          songCount,
+          firstIssueId: created[0].id,
+        });
+      }
+
+      res.status(201).json({
+        dayPlanId,
+        totalDurationMinutes: body.plan.totalDurationMinutes,
+        blockCount: body.plan.blocks.length,
+        totalSongs: batchesCreated.reduce((s, b) => s + b.songCount, 0),
+        batches: batchesCreated,
+      });
     },
   );
 

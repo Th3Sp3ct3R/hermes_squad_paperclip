@@ -14,10 +14,11 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Music, Plus, X } from "lucide-react";
+import { Music, Plus, X, Sparkles } from "lucide-react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
+import { AngelChamberDialog } from "@/components/AngelChamberDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
@@ -118,6 +119,7 @@ export function SunoPipeline() {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const [chamberOpen, setChamberOpen] = useState(false);
   const [conceptDraft, setConceptDraft] = useState("");
   const [chakraDraft, setChakraDraft] = useState<SunoChakra>("HEART");
   const [genreDraft, setGenreDraft] = useState("");
@@ -234,28 +236,60 @@ export function SunoPipeline() {
             </p>
           </div>
         </div>
-        {/* Begin Opus / Cancel — Albedo button when closed, ghost top-right
-            when open so the form has the visual gravity, not the cancel. */}
-        <Button
-          onClick={() => setShowCreate((v) => !v)}
-          size="sm"
-          variant={showCreate ? "ghost" : "default"}
-          style={
-            showCreate
-              ? { color: "#C0C0C0" }
-              : {
-                  backgroundColor: "#FFFFFF",
-                  color: "#000000",
-                  borderColor: "#C0C0C0",
-                  boxShadow:
-                    "0 0 12px rgba(255,255,255,0.35), inset 0 0 8px rgba(192,192,192,0.2)",
-                }
-          }
-        >
-          {showCreate ? <X className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
-          {showCreate ? "Cancel" : "Begin Opus"}
-        </Button>
+        {/* Two ways into the pipeline:
+            - "Consult the Council" opens the Angel Chamber: Hermes asks
+              what you're doing today, prescribes frequencies per block,
+              dispatches one batch per block.
+            - "Begin Opus" opens the bare form for a single concept. */}
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => setChamberOpen(true)}
+            size="sm"
+            style={{
+              backgroundColor: "#FFD700",
+              color: "#000000",
+              borderColor: "#C0C0C0",
+              boxShadow:
+                "0 0 14px rgba(255,215,0,0.45), inset 0 0 10px rgba(255,215,0,0.2)",
+            }}
+          >
+            <Sparkles className="h-4 w-4 mr-1" />
+            Consult the Council
+          </Button>
+          <Button
+            onClick={() => setShowCreate((v) => !v)}
+            size="sm"
+            variant={showCreate ? "ghost" : "default"}
+            style={
+              showCreate
+                ? { color: "#C0C0C0" }
+                : {
+                    backgroundColor: "#FFFFFF",
+                    color: "#000000",
+                    borderColor: "#C0C0C0",
+                    boxShadow:
+                      "0 0 12px rgba(255,255,255,0.35), inset 0 0 8px rgba(192,192,192,0.2)",
+                  }
+            }
+          >
+            {showCreate ? <X className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
+            {showCreate ? "Cancel" : "Begin Opus"}
+          </Button>
+        </div>
       </div>
+
+      {/* Angel Chamber — the ritual flow that replaces the bare form when
+          the user clicks "Consult the Council." */}
+      {selectedCompanyId && (
+        <AngelChamberDialog
+          open={chamberOpen}
+          onOpenChange={setChamberOpen}
+          companyId={selectedCompanyId}
+          onDispatched={() =>
+            queryClient.invalidateQueries({ queryKey: sunoQueryKey(selectedCompanyId) })
+          }
+        />
+      )}
 
       {showCreate && (
         <Card className="p-4 space-y-4">

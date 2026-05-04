@@ -26,15 +26,25 @@ export function TopBar() {
 
   return (
     <div className="flex items-center gap-3.5 h-12 px-4 border-b border-[rgba(255,255,255,0.14)] bg-[#09090B] shrink-0 relative z-10">
-      {/* Logo */}
+      {/* Logo — Caduceus of Hermes (glowing) */}
       <div
-        className="w-9 h-9 rounded grid place-items-center border border-[rgba(255,255,255,0.14)] shrink-0"
-        style={{ background: "#0a0a0a" }}
+        className="w-9 h-9 rounded-lg grid place-items-center border border-[rgba(255,255,255,0.14)] shrink-0"
+        style={{ background: "#0a0a0a", boxShadow: "0 0 12px rgba(255,255,255,0.08)" }}
         aria-hidden="true"
       >
-        <svg viewBox="0 0 24 24" fill="none" className="w-[18px] h-[18px]">
-          <path d="M4 20 L8 4 L12 14 L16 4 L20 20" stroke="#ededed" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
-          <circle cx="12" cy="12" r="1.6" fill="#ededed" />
+        <svg viewBox="0 0 64 64" fill="none" className="w-5 h-5" style={{ filter: "drop-shadow(0 0 4px rgba(255,255,255,0.5))" }}>
+          {/* Staff */}
+          <line x1="32" y1="14" x2="32" y2="58" stroke="#ededed" strokeWidth="2" strokeLinecap="round" />
+          {/* Head circle */}
+          <circle cx="32" cy="11" r="3.5" stroke="#ededed" strokeWidth="1.6" />
+          {/* Left wing */}
+          <path d="M28.5 14 C24 10, 16 8, 8 12 C12 8, 18 6, 24 8 C20 5, 14 3, 8 5" stroke="#ededed" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          {/* Right wing */}
+          <path d="M35.5 14 C40 10, 48 8, 56 12 C52 8, 46 6, 40 8 C44 5, 50 3, 56 5" stroke="#ededed" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          {/* Left serpent */}
+          <path d="M32 18 C26 22, 22 24, 24 28 C26 32, 32 30, 32 34 C32 38, 26 36, 24 40 C22 44, 26 46, 32 50" stroke="#ededed" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+          {/* Right serpent */}
+          <path d="M32 18 C38 22, 42 24, 40 28 C38 32, 32 30, 32 34 C32 38, 38 36, 40 40 C42 44, 38 46, 32 50" stroke="#ededed" strokeWidth="1.4" fill="none" strokeLinecap="round" />
         </svg>
       </div>
 
