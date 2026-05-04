@@ -8,18 +8,18 @@ import { useDialog } from "@/context/DialogContext";
 //   The Workings    — active operations
 //   The Intentions  — stated ends
 //   The Operations  — multi-step works
-//   Musica Universalis — the music of the spheres
+//   Hermetica       — the music of the spheres
 // Top nav holds only the headline destinations. The Workings (Issues),
 // The Intentions (Goals), and The Operations (Projects) live in the
 // command palette / left sidebar so the top bar stays focused on the
-// Hermes Squad's vertical (Dashboard \u2192 Agents \u2192 Music \u2192 Path).
+// Hermes Squad's vertical (The Observatory \u2192 Choir \u2192 Hermetica \u2192 Path).
 const NAV_LINKS = [
-  { to: "/dashboard", label: "Dashboard" },
-  { to: "/agents", label: "Agents" },
-  { to: "/suno", label: "Musica Universalis", title: "The soul, descending into incarnation, acquires the qualities of each sphere; ascending in gnosis, it surrenders them and returns to source. \u2014 Discourse on the Eighth and Ninth" },
+  { to: "/dashboard", label: "The Observatory" },
+  { to: "/agents", label: "Choir" },
+  { to: "/suno", label: "Hermetica", title: "The soul, descending into incarnation, acquires the qualities of each sphere; ascending in gnosis, it surrenders them and returns to source. \u2014 Discourse on the Eighth and Ninth" },
   { to: "/initiate", label: "The Initiate\u2019s Path" },
   { to: "/activity", label: "Activity" },
-  { to: "/costs", label: "Costs" },
+  { to: "/costs", label: "Ledger" },
 ] as const;
 
 export function TopBar() {
@@ -97,7 +97,7 @@ export function TopBar() {
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 15a4 4 0 0 1-4 4H8l-5 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
           </svg>
-          New Chat
+          Invoke
         </button>
         <div className="w-7 h-7 rounded-full shrink-0" style={{ background: "linear-gradient(135deg, #4ea8ff, #b964ff)", border: "1px solid rgba(255,255,255,0.14)" }} />
       </div>

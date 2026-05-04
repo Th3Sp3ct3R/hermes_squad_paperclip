@@ -276,7 +276,7 @@ export function Dashboard() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Dashboard" }]);
+    setBreadcrumbs([{ label: "The Observatory" }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
@@ -478,7 +478,7 @@ export function Dashboard() {
             {/* Usage Trend — 2/3 width */}
             <div className="md:col-span-2 rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="seclabel b"><span className="lc" /> USAGE TREND · 30D</h3>
+                <h3 className="seclabel b"><span className="lc" /> The Ephemeris</h3>
                 <div className="flex gap-1">
                   {["7D", "14D", "30D"].map(p => (
                     <button key={p} className={cn("px-2 py-0.5 text-[10px] rounded", p === "30D" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
@@ -498,7 +498,7 @@ export function Dashboard() {
 
             {/* Top Models — 1/3 width */}
             <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
-              <h3 className="seclabel p mb-3"><span className="lc" /> TOP MODELS · 30D</h3>
+              <h3 className="seclabel p mb-3"><span className="lc" /> The Daemons</h3>
               <div className="space-y-2">
                 {usageStats && usageStats.byModel.length > 0 ? (
                   usageStats.byModel.slice(0, 5).map((m) => (
@@ -530,7 +530,7 @@ export function Dashboard() {
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="seclabel w">
-                    <span className="lc" /> Sessions Intelligence
+                    <span className="lc" /> The Hermetica
                   </h3>
                   <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
                     <span className="text-[#ededed] font-medium">{recentActivity.length}</span> recent
@@ -566,7 +566,7 @@ export function Dashboard() {
               {/* Cache Efficiency */}
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="seclabel b"><span className="lc" /> Cache Efficiency</h3>
+                  <h3 className="seclabel b"><span className="lc" /> Memoria</h3>
                   <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">30D</span>
                 </div>
                 {usageStats && usageStats.totalCalls > 0 ? (
@@ -588,7 +588,7 @@ export function Dashboard() {
               {/* Agent Skills */}
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="seclabel b"><span className="lc" /> Skill Inventory</h3>
+                  <h3 className="seclabel b"><span className="lc" /> The Grimoire</h3>
                   <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
                     <span className="text-[#ededed] font-medium">{agents?.length ?? 0}</span> skills
                   </span>
@@ -765,7 +765,7 @@ function SongsMetricsPanel({ companyId }: { companyId: string }) {
       >
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Songs Metrics · Brainwave Tuning
+            Harmonic Telemetry
           </h3>
           <span
             className="font-mono text-[11px] tabular-nums tracking-wider"
@@ -841,7 +841,7 @@ function SongsMetricsPanel({ companyId }: { companyId: string }) {
         {metrics.topGenres.length > 0 && (
           <div className="pt-3 border-t border-border/30 space-y-2">
             <h4 className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Top Genres
+              Modes
             </h4>
             {metrics.topGenres.map(([genre, count]) => {
               const pct = Math.round(

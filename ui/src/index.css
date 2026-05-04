@@ -842,6 +842,35 @@ a.paperclip-project-mention-chip {
   transform-origin: center;
 }
 
+/* Hover-triggered sacred geometry spin — slow graceful rotation used on
+   archangel cards. Distinct from chakra-spin (12s) so they can coexist
+   without conflicting when both are active. */
+@keyframes geometry-hover-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* The geometry overlay wrapper transitions opacity on hover. The SVG inside
+   it receives the spin via .geometry-hover-spin-active. */
+.geometry-hover-overlay {
+  opacity: 0;
+  transition: opacity 350ms ease;
+  transform-origin: center;
+  pointer-events: none;
+}
+
+/* The card's group hover reveals the overlay */
+.group:hover .geometry-hover-overlay {
+  opacity: 1;
+}
+
+/* The SVG inside the overlay spins while overlay is visible */
+.group:hover .geometry-hover-spin {
+  animation: geometry-hover-spin 18s linear infinite;
+  transform-origin: center;
+  filter: drop-shadow(0 0 4px currentColor) drop-shadow(0 0 10px currentColor);
+}
+
 /* Audio-amplitude visualizer pulse — used by the AudioWavePulse component to
    pulse the chakra yantra in time with the track. The actual amplitude is
    driven by JS via inline transform; this rule just establishes the origin. */

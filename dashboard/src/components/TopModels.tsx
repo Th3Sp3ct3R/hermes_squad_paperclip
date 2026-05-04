@@ -86,7 +86,7 @@ export default function TopModels() {
       borderRadius: 10,
       padding: "20px 24px",
     }}>
-      <SectionHeader title="TOP MODELS · 30D" />
+      <SectionHeader title="THE DAEMONS · 30D" />
 
       {isLoading && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>

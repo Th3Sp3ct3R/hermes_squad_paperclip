@@ -82,7 +82,7 @@ function SectionHeader({ live }: { live: boolean }) {
         color: C.label,
         fontWeight: 500,
       }}>
-        LIVE FEED · SSE STREAM
+        𓂀 AKASHIC STREAM
       </span>
 
       {/* live indicator */}

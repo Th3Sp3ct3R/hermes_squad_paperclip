@@ -124,12 +124,12 @@ export function Sidebar() {
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <span className="flex h-4 w-4 items-center justify-center text-[15px] leading-none opacity-80 shrink-0">{GLYPH.FIRE}</span>
-            <span className="truncate">New Issue</span>
+            <span className="truncate">Summon</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={GLYPH.SUN} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label="The Observatory" icon={GLYPH.SUN} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label="Inbox"
+            label="The Codex"
             icon={GLYPH.MOON}
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
@@ -155,10 +155,10 @@ export function Sidebar() {
         <SidebarAgents />
 
         <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={GLYPH.SATURN} />
-          <SidebarNavItem to="/costs" label="Costs" icon={GLYPH.SALT} />
-          <SidebarNavItem to="/activity" label="Activity" icon={GLYPH.MARS} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={GLYPH.VENUS} />
+          <SidebarNavItem to="/org" label="Org ♄" icon={GLYPH.SATURN} />
+          <SidebarNavItem to="/costs" label="Ledger ♃" icon={GLYPH.SALT} />
+          <SidebarNavItem to="/activity" label="Activity ♂" icon={GLYPH.MARS} />
+          <SidebarNavItem to="/company/settings" label="Tuning ☿" icon={GLYPH.VENUS} />
         </SidebarSection>
 
         <PluginSlotOutlet

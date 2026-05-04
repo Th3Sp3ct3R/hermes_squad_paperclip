@@ -12,11 +12,12 @@
  * The page reads from /api/suno-pipeline (TanStack Query) and writes via
  * the same client. Mutations go through the standard activity-log pipeline.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Music, Plus, X, Sparkles } from "lucide-react";
+import { Music, Plus, X, Sparkles, Users, Layers } from "lucide-react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useToast } from "@/context/ToastContext";
 import { Button } from "@/components/ui/button";
 import { AngelChamberDialog } from "@/components/AngelChamberDialog";
 import { Input } from "@/components/ui/input";
@@ -29,12 +30,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ChakraFrequencyMap } from "@/components/ChakraFrequencyMap";
 import { ArchangelAvatar, ArchangelAvatarStack } from "@/components/ArchangelAvatar";
 import { ChakraYantra, type ArchangelName, type ChakraKey } from "@/components/SacredGeometry";
 import { useAudioAmplitude } from "@/lib/useAudioAmplitude";
 import { cn } from "@/lib/utils";
 import { agentsApi } from "@/api/agents";
+import { agentMessagesApi } from "@/api/agentMessages";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   sunoPipelineApi,
@@ -49,10 +59,10 @@ import {
 import type { Agent } from "@paperclipai/shared";
 
 const STATUS_LABEL: Record<SunoStatus, string> = {
-  DRAFT: "Concept",
-  GENERATING: "Generating",
-  REVIEW: "Review",
-  APPROVED: "Approved",
+  DRAFT: "Nigredo",
+  GENERATING: "Albedo",
+  REVIEW: "Citrinitas",
+  APPROVED: "Rubedo",
   PUBLISHED: "Published",
   FAILED: "Failed",
 };
@@ -100,6 +110,140 @@ const MOOD_PRESET_CHIPS = [
   { id: "sleep", label: "Sleep", emoji: "\u{1F311}", concept: "Ultra-minimalist dark ambient soundscape designed for neural shutdown.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, sleep music, deep space, minimal electronic" },
 ];
 
+// ── Council messaging constants ─────────────────────────────────────────────
+const COMPANY_ID = "af4ca647-81cb-4dc2-98f1-d54136391505";
+const FROM_USER_ID = "julian@growthgod.com";
+
+/** The 10 main archangels (excluding Azrael) available for council summons. */
+const COUNCIL_AGENTS: { name: string; id: string }[] = [
+  { name: "Cassiel",    id: "01c3cee8-da9e-4689-98d4-95fe6e9db9f8" },
+  { name: "Uriel",     id: "1cab8b03-789b-435f-b132-e6ace1e38077" },
+  { name: "Jophiel",   id: "cbb25fcb-b22a-4f2f-9a99-a7954072ee66" },
+  { name: "Raziel",    id: "a6e4f405-ce0b-41fb-a7be-1e748b3a86aa" },
+  { name: "Gabriel",   id: "dfedb8f1-c934-4651-8291-668504a63b35" },
+  { name: "Metatron",  id: "34b4aa4b-7e04-42f4-9c15-0a99f7191ce1" },
+  { name: "Zadkiel",   id: "ea3d1ec5-ee21-4662-9c2b-cc3ad39a2f9c" },
+  { name: "Raphael",   id: "08f2f594-3573-4e6f-b643-20ae5377ca5c" },
+  { name: "Sandalphon",id: "8fab7522-4545-463d-a5e4-6bffaa80bd1c" },
+  { name: "Michael",   id: "85535ca2-0f31-41b2-bab1-618801945937" },
+];
+
+/** Rotating council summons prompts — round-robin per invocation. */
+const COUNCIL_PROMPTS = [
+  "What do you want to learn today?",
+  "What are you working on right now?",
+  "What needs your attention in the pipeline?",
+  "Report your current status and next action.",
+];
+
+// ── Batch generation presets (CLAUDE.md MOOD_PRESETS + 4 extras) ──────────────
+const BATCH_PRESETS: {
+  id: string;
+  label: string;
+  emoji: string;
+  concept: string;
+  targetChakra: SunoChakra;
+  genre: string;
+}[] = [
+  {
+    id: "deep-coding",
+    label: "Deep Coding",
+    emoji: "\u{1F5A5}",
+    concept: "3am server room, one dim monitor, hypnotic repetitive minimal. Dark sub-bass pulse, sparse kick, no hooks, flat energy. Loop forever.",
+    targetChakra: "THIRD_EYE",
+    genre: "dark minimalist hip-hop, ambient trap, lo-fi industrial",
+  },
+  {
+    id: "night-drive",
+    label: "Night Drive",
+    emoji: "\u{1F319}",
+    concept: "Driving through an empty city at 2am with tinted windows. Deep 808 slides, haunted piano loop, sparse hi-hats, menacing but controlled.",
+    targetChakra: "SACRAL",
+    genre: "dark trap, phonk, memphis rap instrumental, cinematic hip-hop",
+  },
+  {
+    id: "creative-flow",
+    label: "Creative Flow",
+    emoji: "\u{1F3A8}",
+    concept: "Golden hour through a dusty window. Warm Rhodes, soft brushed snare, subtle bass groove, tape hiss. Calm confidence, unhurried mastery.",
+    targetChakra: "HEART",
+    genre: "lo-fi hip-hop, ambient jazz, chill instrumental, warm analog",
+  },
+  {
+    id: "shadow-work",
+    label: "Shadow Work",
+    emoji: "\u{1F52E}",
+    concept: "Controlled descent, sinking into warm black water. One evolving dark pad with slow amplitude modulation at 6 cycles per second. No resolution.",
+    targetChakra: "ROOT",
+    genre: "dark ambient, drone, ethereal bass music, witch house",
+  },
+  {
+    id: "gym-run",
+    label: "Gym / Run",
+    emoji: "\u{1F4AA}",
+    concept: "Controlled rage, not reckless anger. A machine, not an animal. Distorted 808 kicks, industrial metallic textures, relentless forward momentum.",
+    targetChakra: "ROOT",
+    genre: "dark industrial hip-hop, aggressive trap, grime instrumental, phonk",
+  },
+  {
+    id: "morning-walk",
+    label: "Morning Walk",
+    emoji: "\u{1F6B6}",
+    concept: "A man walking through cold air with purpose. Not celebrating, not mourning — just moving. Chopped soul sample, punchy boom-bap, quiet strength.",
+    targetChakra: "SOLAR",
+    genre: "boom bap, instrumental hip-hop, golden era beats, dusty samples",
+  },
+  {
+    id: "wind-down",
+    label: "Wind Down",
+    emoji: "\u{1F373}",
+    concept: "Cooking something good alone in a clean kitchen with low lighting. Warm bassline, gentle keys, comfortable solitude, no urgency at all.",
+    targetChakra: "HEART",
+    genre: "lo-fi hip-hop, chillhop, smooth jazz beats, ambient R&B instrumental",
+  },
+  {
+    id: "sleep-descent",
+    label: "Sleep",
+    emoji: "\u{1F634}",
+    concept: "Floating in a sealed black vault. Single low drone evolving imperceptibly. No rhythm, no emotion, pure neutral descent. Loop at very low volume.",
+    targetChakra: "CROWN",
+    genre: "dark ambient, drone, sleep music, deep space, minimal electronic",
+  },
+  // Four additional sphere presets
+  {
+    id: "void-state",
+    label: "Void State",
+    emoji: "\u{26AB}",
+    concept: "Total silence that breathes. A formless black field with one low pulse every 8 seconds. Pre-creation, pre-thought, pure potential.",
+    targetChakra: "CROWN",
+    genre: "dark ambient, extreme minimal, void, deep drone, sub-bass only",
+  },
+  {
+    id: "architect-mode",
+    label: "Architect Mode",
+    emoji: "\u{26F2}",
+    concept: "Designing systems in cold fluorescent light. Sharp metallic clicks, rigid quantized groove, zero emotion, maximum clarity.",
+    targetChakra: "THIRD_EYE",
+    genre: "industrial minimal, modular synth, cold wave, functional ambient",
+  },
+  {
+    id: "temple-run",
+    label: "Temple Run",
+    emoji: "\u{1F3DB}",
+    concept: "Running through stone corridors toward dawn. Ancient percussion rhythm, ceremonial, determined. Each step a ritual act.",
+    targetChakra: "SOLAR",
+    genre: "tribal percussion, cinematic world, ceremonial ambient, ritualistic",
+  },
+  {
+    id: "midnight-mass",
+    label: "Midnight Mass",
+    emoji: "\u{269B}",
+    concept: "High cathedral ceiling at 3am. Pipe organ drone, single candle, dust motes falling through light. Reverent, vast, alone.",
+    targetChakra: "CROWN",
+    genre: "dark sacred, organ drone, gothic ambient, ecclesiastical",
+  },
+];
+
 const PIPELINE_AGENTS: { name: ArchangelName; role: string; sphere: string; domain: string }[] = [
   { name: "Michael", role: "Commander", sphere: "Geburah", domain: "Assigns agents, dispatches issues" },
   { name: "Uriel", role: "Sound Prompt", sphere: "Netzach", domain: "Writes Suno/MiniMax description text" },
@@ -118,11 +262,102 @@ export function SunoPipeline() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [showCreate, setShowCreate] = useState(false);
   const [chamberOpen, setChamberOpen] = useState(false);
   const [conceptDraft, setConceptDraft] = useState("");
   const [chakraDraft, setChakraDraft] = useState<SunoChakra>("HEART");
   const [genreDraft, setGenreDraft] = useState("");
+
+  // ── Task A: Council summons state ───────────────────────────────────────
+  const [councilPending, setCouncilPending] = useState(false);
+  const councilPromptIndexRef = useRef(0);
+
+  /** Send a "request" message to every archangel in the council. */
+  const invokeCouncil = async () => {
+    if (councilPending) return;
+    const companyId = selectedCompanyId ?? COMPANY_ID;
+    setCouncilPending(true);
+    try {
+      const promptIndex = councilPromptIndexRef.current % COUNCIL_PROMPTS.length;
+      councilPromptIndexRef.current += 1;
+      const body = COUNCIL_PROMPTS[promptIndex]!;
+      let dispatched = 0;
+      for (const agent of COUNCIL_AGENTS) {
+        await agentMessagesApi.send({
+          companyId,
+          fromUserId: FROM_USER_ID,
+          toAgentId: agent.id,
+          kind: "request",
+          subject: "Council Summons",
+          body,
+        });
+        dispatched += 1;
+      }
+      pushToast({
+        tone: "success",
+        title: "Council summoned",
+        body: `Sent to ${dispatched} archangels: "${body}"`,
+        ttlMs: 6000,
+      });
+    } catch (err) {
+      pushToast({
+        tone: "error",
+        title: "Council summons failed",
+        body: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setCouncilPending(false);
+    }
+  };
+
+  // ── Task B: Batch sphere generation state ────────────────────────────────
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+
+  /**
+   * Fire all BATCH_PRESETS: create each as a new SunoIssue then immediately
+   * call auto-run with minimax backend. 500ms stagger between dispatches.
+   */
+  const invokeSpheres = async (presets: typeof BATCH_PRESETS) => {
+    if (batchRunning || !selectedCompanyId) return;
+    setBatchRunning(true);
+    setBatchProgress({ done: 0, total: presets.length });
+    let succeeded = 0;
+    let failed = 0;
+    for (let i = 0; i < presets.length; i++) {
+      const preset = presets[i]!;
+      try {
+        // Step 1: create the issue
+        const issue = await sunoPipelineApi.create(selectedCompanyId, {
+          concept: preset.concept,
+          targetChakra: preset.targetChakra,
+          genre: preset.genre,
+        });
+        // Step 2: fire auto-run immediately
+        await sunoPipelineApi.autoRun(issue.id, selectedCompanyId, {
+          musicBackend: "minimax",
+        });
+        succeeded += 1;
+      } catch {
+        failed += 1;
+      }
+      setBatchProgress({ done: i + 1, total: presets.length });
+      // Stagger next dispatch by 500ms
+      if (i < presets.length - 1) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    queryClient.invalidateQueries({ queryKey: sunoQueryKey(selectedCompanyId) });
+    setBatchRunning(false);
+    setBatchProgress(null);
+    pushToast({
+      tone: succeeded > 0 ? "success" : "error",
+      title: "Spheres invoked",
+      body: `${succeeded} dispatched${failed > 0 ? `, ${failed} failed` : ""}.`,
+      ttlMs: 7000,
+    });
+  };
 
   // Resolve which preset is selected (if any) by matching concept text
   const selectedPreset = useMemo(
@@ -131,7 +366,7 @@ export function SunoPipeline() {
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Musica Universalis" }]);
+    setBreadcrumbs([{ label: "Hermetica" }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
@@ -222,7 +457,7 @@ export function SunoPipeline() {
               }}
             >
               <span aria-hidden style={{ marginRight: "0.4rem" }}>⚕</span>
-              Musica Universalis
+              Hermetica
             </h1>
             <p
               className="text-sm mt-1.5 italic"
@@ -236,12 +471,79 @@ export function SunoPipeline() {
             </p>
           </div>
         </div>
-        {/* Two ways into the pipeline:
-            - "Consult the Council" opens the Angel Chamber: Hermes asks
-              what you're doing today, prescribes frequencies per block,
-              dispatches one batch per block.
-            - "Begin Opus" opens the bare form for a single concept. */}
-        <div className="flex items-center gap-2">
+        {/* Header actions:
+            - "Consult the Council" opens the Angel Chamber ritual flow.
+            - "Invoke the Council" broadcasts summons messages to all 10 archangels.
+            - "Invoke the Spheres" batch-creates + auto-runs all mood presets.
+            - "Begin Opus" opens the bare single-concept form. */}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {/* Task A: Invoke the Council — broadcast messages to all archangels */}
+          <Button
+            onClick={invokeCouncil}
+            disabled={councilPending}
+            size="sm"
+            style={{
+              backgroundColor: councilPending ? "rgba(139,92,246,0.3)" : "#7c3aed",
+              color: "#FFFFFF",
+              borderColor: "#a78bfa",
+              boxShadow:
+                "0 0 14px rgba(124,58,237,0.45), inset 0 0 10px rgba(167,139,250,0.15)",
+              opacity: councilPending ? 0.7 : 1,
+            }}
+          >
+            <Users className="h-4 w-4 mr-1" />
+            {councilPending ? "Summoning…" : "Invoke the Council"}
+          </Button>
+
+          {/* Task B: Invoke the Spheres — batch create + auto-run all presets */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                disabled={batchRunning || !selectedCompanyId}
+                size="sm"
+                style={{
+                  backgroundColor: batchRunning ? "rgba(14,165,233,0.3)" : "#0369a1",
+                  color: "#FFFFFF",
+                  borderColor: "#38bdf8",
+                  boxShadow:
+                    "0 0 14px rgba(3,105,161,0.45), inset 0 0 10px rgba(56,189,248,0.15)",
+                  opacity: batchRunning ? 0.7 : 1,
+                }}
+              >
+                <Layers className="h-4 w-4 mr-1" />
+                {batchRunning && batchProgress
+                  ? `Generating ${batchProgress.done}/${batchProgress.total}…`
+                  : "Invoke the Spheres"}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel className="text-xs uppercase tracking-widest text-muted-foreground">
+                Batch Generation
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => invokeSpheres(BATCH_PRESETS)}
+                className="cursor-pointer"
+              >
+                <Layers className="h-3.5 w-3.5 mr-2 shrink-0" />
+                All 12 Presets
+                <span className="ml-auto text-[10px] text-muted-foreground">12 songs</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {BATCH_PRESETS.map((preset) => (
+                <DropdownMenuItem
+                  key={preset.id}
+                  onClick={() => invokeSpheres([preset])}
+                  className="cursor-pointer"
+                >
+                  <span className="mr-2 text-sm">{preset.emoji}</span>
+                  <span className="truncate">{preset.label}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Existing: Consult the Council — opens Angel Chamber dialog */}
           <Button
             onClick={() => setChamberOpen(true)}
             size="sm"
@@ -528,11 +830,14 @@ function ArchangelAgentBar({ issues }: ArchangelAgentBarProps) {
             {String(idx + 1).padStart(2, "0")}
           </span>
 
-          {/* Avatar — xl size (96px) with sacred geometry halo */}
+          {/* Avatar — xl size (96px) with sacred geometry halo.
+              hoverable=true enables the hover overlay spin/glow; the
+              parent div already carries `group` so the CSS selector fires. */}
           <ArchangelAvatar
             name={agent.name}
             size="xl"
             working={hasGenerating}
+            hoverable
           />
 
           {/* Name */}
@@ -583,12 +888,6 @@ function SunoColumn({ status, issues, agentNameById, onChangeStatus }: SunoColum
         <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           <span aria-hidden style={{ filter: "drop-shadow(0 0 2px " + opus.bg + ")" }}>{opus.glyph}</span>
           {STATUS_LABEL[status]}
-          <span
-            className="text-[9px] font-normal lowercase tracking-widest opacity-70"
-            title={`Magnum Opus stage: ${opus.label}`}
-          >
-            {opus.label}
-          </span>
         </span>
         <span className="text-xs text-muted-foreground/60 tabular-nums">
           {issues.length}

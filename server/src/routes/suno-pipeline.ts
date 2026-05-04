@@ -3341,39 +3341,114 @@ export function sunoPipelineRoutes(db: Db) {
     }
 
     // Step 3-5: Creative chain — MELODY FIRST (Uriel → Zadkiel → Jophiel)
-    issue = await executeGenerateInternal({
-      issue,
-      companyId: body.companyId,
-      stage: "soundPrompt",
-      archangelName: "Uriel",
-      defaultModel: SUNO_MODELS.soundPrompt,
-      build: buildSoundPromptPrompt,
-      maxTokens: 600,
-      hints: body.hints,
-      actor,
-    });
-    issue = await executeGenerateInternal({
-      issue,
-      companyId: body.companyId,
-      stage: "lyrics",
-      archangelName: "Zadkiel",
-      defaultModel: SUNO_MODELS.lyrics,
-      build: buildLyricsPrompt,
-      maxTokens: 1200,
-      hints: body.hints,
-      actor,
-    });
-    issue = await executeGenerateInternal({
-      issue,
-      companyId: body.companyId,
-      stage: "visualPrompt",
-      archangelName: "Jophiel",
-      defaultModel: SUNO_MODELS.visualPrompt,
-      build: buildVisualPromptPrompt,
-      maxTokens: 500,
-      hints: body.hints,
-      actor,
-    });
+    //
+    // CRITICAL: Wrap the entire creative chain in a try/catch. Without this,
+    // an OpenRouter failure (rate-limit, bad model, network timeout) throws
+    // through executeGenerateInternal → callOpenRouter and the Express global
+    // error handler returns a 500 — but the song stays stuck in GENERATING
+    // forever with no recovery path. The catch block below transitions the
+    // song to FAILED so the kanban reflects reality and allows retry.
+    try {
+      issue = await executeGenerateInternal({
+        issue,
+        companyId: body.companyId,
+        stage: "soundPrompt",
+        archangelName: "Uriel",
+        defaultModel: SUNO_MODELS.soundPrompt,
+        build: buildSoundPromptPrompt,
+        maxTokens: 600,
+        hints: body.hints,
+        actor,
+      });
+      issue = await executeGenerateInternal({
+        issue,
+        companyId: body.companyId,
+        stage: "lyrics",
+        archangelName: "Zadkiel",
+        defaultModel: SUNO_MODELS.lyrics,
+        build: buildLyricsPrompt,
+        maxTokens: 1200,
+        hints: body.hints,
+        actor,
+      });
+      issue = await executeGenerateInternal({
+        issue,
+        companyId: body.companyId,
+        stage: "visualPrompt",
+        archangelName: "Jophiel",
+        defaultModel: SUNO_MODELS.visualPrompt,
+        build: buildVisualPromptPrompt,
+        maxTokens: 500,
+        hints: body.hints,
+        actor,
+      });
+    } catch (creativeErr) {
+      // Determine which stage we reached before the failure.
+      const metaSnap = (issue.metadata ?? {}) as Record<string, unknown>;
+      const stagesSnap = (metaSnap.stages && typeof metaSnap.stages === "object"
+        ? (metaSnap.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+      const failedAt = !stagesSnap.soundPrompt
+        ? "soundPrompt (Uriel)"
+        : !stagesSnap.lyrics
+          ? "lyrics (Zadkiel)"
+          : "visualPrompt (Jophiel)";
+      const errMsg = creativeErr instanceof Error ? creativeErr.message : String(creativeErr);
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.auto_run.creative_chain_failed",
+        entityType: "suno_issue",
+        entityId: issue.id,
+        details: { failedAt, error: errMsg, stagesCompleted: Object.keys(stagesSnap) },
+      });
+
+      // Transition to FAILED so the kanban reflects the real state.
+      const failMeta = appendHistory(
+        {
+          ...metaSnap,
+          stages: stagesSnap,
+          lastFailureReason: `Creative chain failed at ${failedAt}: ${errMsg}`,
+          escalation: {
+            at: new Date().toISOString(),
+            source: "auto-run",
+            reason: `Creative chain failed at ${failedAt}`,
+            error: errMsg,
+          },
+        },
+        {
+          stage: "fail",
+          output: `creative chain failed at ${failedAt}`,
+          at: new Date().toISOString(),
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          agentName: `auto-run (${failedAt})`,
+          status: "FAILED" as SunoStatus,
+        },
+      );
+      const [failedRow] = await db
+        .update(sunoIssues)
+        .set({ status: "FAILED", metadata: failMeta, updatedAt: new Date() })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (failedRow) {
+        issue = failedRow;
+        await syncLinkedIssueStatus(failedRow, "FAILED");
+      }
+
+      res.json({
+        issue,
+        readyForReview: false,
+        missingStages: [failedAt],
+        error: `Creative chain failed at ${failedAt}: ${errMsg}`,
+      });
+      return;
+    }
 
     // Step 6: Music generation — option A parallel A/B.
     //
@@ -3850,6 +3925,189 @@ export function sunoPipelineRoutes(db: Db) {
             !finalStages.visualPrompt ? "visualPrompt" : null,
             !hasAudio ? "audio (suno or minimax)" : null,
           ].filter(Boolean),
+    });
+  });
+
+  // ── POST /triage ──────────────────────────────────────────────────────────
+  // Batch-triage stuck GENERATING songs. Categorizes them and applies the
+  // correct transition:
+  //
+  //   - Songs WITH audio (suno or minimax) + all creative stages → REVIEW
+  //   - Songs WITH audio but missing creative stages → REVIEW (audio exists)
+  //   - Songs with NO audio and stale (older than staleMinutes) → FAILED
+  //   - Songs with NO audio and recent → left in GENERATING (still may be
+  //     running)
+  //
+  // Params:
+  //   companyId     — required
+  //   dryRun        — if true, returns the plan without executing (default true)
+  //   staleMinutes  — how old an issue must be to be considered stuck (default 30)
+  //
+  // Returns: { triaged: [...], summary: { promoted, failed, skipped } }
+  const triageSchema = z.object({
+    companyId: z.string().uuid(),
+    dryRun: z.boolean().default(true),
+    staleMinutes: z.number().int().positive().default(30),
+  });
+
+  router.post("/suno-pipeline/triage", validate(triageSchema), async (req, res) => {
+    const body = req.body as z.infer<typeof triageSchema>;
+    assertCompanyAccess(req, body.companyId);
+    const actor = getActorInfo(req);
+
+    // Load all GENERATING issues for this company.
+    const rows = await db
+      .select()
+      .from(sunoIssues)
+      .where(
+        and(
+          eq(sunoIssues.companyId, body.companyId),
+          eq(sunoIssues.status, "GENERATING"),
+        ),
+      );
+
+    const staleCutoff = new Date(Date.now() - body.staleMinutes * 60 * 1000);
+    const results: Array<{
+      id: string;
+      concept: string;
+      action: "promote_to_review" | "fail_stale" | "skip_recent";
+      reason: string;
+      hasAudio: boolean;
+      stagesCompleted: string[];
+    }> = [];
+
+    for (const row of rows) {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+
+      const hasAnyAudio = !!(row.audioUrl || row.minimaxAudioUrl || stages.minimaxAudioUrl);
+      const stagesCompleted = Object.keys(stages);
+      const isStale = row.updatedAt ? new Date(row.updatedAt) < staleCutoff : true;
+
+      if (hasAnyAudio) {
+        // Has audio — promote to REVIEW regardless of creative stages.
+        results.push({
+          id: row.id,
+          concept: (row.concept ?? "").slice(0, 60),
+          action: "promote_to_review",
+          reason: `Has audio (suno=${!!row.audioUrl}, minimax=${!!(row.minimaxAudioUrl || stages.minimaxAudioUrl)})`,
+          hasAudio: true,
+          stagesCompleted,
+        });
+      } else if (isStale) {
+        // No audio and stale — transition to FAILED.
+        results.push({
+          id: row.id,
+          concept: (row.concept ?? "").slice(0, 60),
+          action: "fail_stale",
+          reason: `No audio, stale since ${row.updatedAt?.toISOString?.() ?? "unknown"} (>${body.staleMinutes}m)`,
+          hasAudio: false,
+          stagesCompleted,
+        });
+      } else {
+        // No audio but recent — may still be in progress.
+        results.push({
+          id: row.id,
+          concept: (row.concept ?? "").slice(0, 60),
+          action: "skip_recent",
+          reason: `No audio but updated recently (within ${body.staleMinutes}m), may still be running`,
+          hasAudio: false,
+          stagesCompleted,
+        });
+      }
+    }
+
+    // Execute transitions if not a dry run.
+    let promoted = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    if (!body.dryRun) {
+      for (const r of results) {
+        if (r.action === "promote_to_review") {
+          const [updated] = await db
+            .update(sunoIssues)
+            .set({ status: "REVIEW", updatedAt: new Date() })
+            .where(and(eq(sunoIssues.id, r.id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (updated) {
+            await syncLinkedIssueStatus(updated, "REVIEW");
+            await logActivity(db, {
+              companyId: body.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "suno_issue.triage.promoted_to_review",
+              entityType: "suno_issue",
+              entityId: r.id,
+              details: { reason: r.reason, stagesCompleted: r.stagesCompleted },
+            });
+            promoted++;
+          }
+        } else if (r.action === "fail_stale") {
+          // Load the issue to get current metadata for the history append.
+          const [current] = await db
+            .select()
+            .from(sunoIssues)
+            .where(and(eq(sunoIssues.id, r.id), eq(sunoIssues.companyId, body.companyId)));
+          if (current) {
+            const curMeta = (current.metadata ?? {}) as Record<string, unknown>;
+            const failMeta = appendHistory(
+              {
+                ...curMeta,
+                lastFailureReason: `Triage: ${r.reason}`,
+                triagedAt: new Date().toISOString(),
+              },
+              {
+                stage: "fail",
+                output: `triage: stale GENERATING with no audio`,
+                at: new Date().toISOString(),
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                agentName: "Metatron (triage)",
+                status: "FAILED" as SunoStatus,
+              },
+            );
+            const [updated] = await db
+              .update(sunoIssues)
+              .set({ status: "FAILED", metadata: failMeta, updatedAt: new Date() })
+              .where(and(eq(sunoIssues.id, r.id), eq(sunoIssues.companyId, body.companyId)))
+              .returning();
+            if (updated) {
+              await syncLinkedIssueStatus(updated, "FAILED");
+              await logActivity(db, {
+                companyId: body.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "suno_issue.triage.failed_stale",
+                entityType: "suno_issue",
+                entityId: r.id,
+                details: { reason: r.reason, stagesCompleted: r.stagesCompleted },
+              });
+              failed++;
+            }
+          }
+        } else {
+          skipped++;
+        }
+      }
+    } else {
+      promoted = results.filter((r) => r.action === "promote_to_review").length;
+      failed = results.filter((r) => r.action === "fail_stale").length;
+      skipped = results.filter((r) => r.action === "skip_recent").length;
+    }
+
+    res.json({
+      dryRun: body.dryRun,
+      staleMinutes: body.staleMinutes,
+      triaged: results,
+      summary: { total: results.length, promoted, failed, skipped },
     });
   });
 

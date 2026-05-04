@@ -179,7 +179,7 @@ export function SongMetrics() {
 
   return (
     <SectionShell
-      title="SONGS METRICS"
+      title="HARMONIC TELEMETRY"
       subtitle="BRAINWAVE TUNING"
       barColor="#c084fc"
     >
@@ -411,7 +411,7 @@ export function SongMetrics() {
                   display: 'inline-block',
                 }}
               />
-              TOP GENRES
+              MODES
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {topGenres.slice(0, 5).map((g, i) => {

@@ -193,7 +193,7 @@ export function Achievements() {
             }}
           />
           <strong style={{ color: '#fff', fontWeight: 500 }}>
-            ASCENDING THE TREE
+            THE HALL OF RECORDS
           </strong>
           <span style={{ color: '#404040' }}>·</span>
           <span>GOLDEN DAWN GRADES</span>

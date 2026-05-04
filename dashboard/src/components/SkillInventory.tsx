@@ -179,7 +179,7 @@ export default function SkillInventory() {
       borderRadius: 10,
       padding: "20px 24px",
     }}>
-      <SectionHeader title="SKILL INVENTORY" meta={metaStr} />
+      <SectionHeader title="THE GRIMOIRE" meta={metaStr} />
 
       {isLoading && (
         <div style={{

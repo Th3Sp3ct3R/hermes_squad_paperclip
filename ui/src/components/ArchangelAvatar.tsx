@@ -52,6 +52,12 @@ interface ArchangelAvatarProps {
   working?: boolean;
   /** Render only the geometry (no portrait) — useful for fallbacks. */
   geometryOnly?: boolean;
+  /**
+   * When true, renders a second geometry layer as a hover overlay.
+   * The parent must have the Tailwind `group` class so the CSS
+   * `.group:hover .geometry-hover-overlay` selector can fire.
+   */
+  hoverable?: boolean;
   className?: string;
 }
 
@@ -60,6 +66,7 @@ export function ArchangelAvatar({
   size = "sm",
   working = false,
   geometryOnly = false,
+  hoverable = false,
   className,
 }: ArchangelAvatarProps) {
   // Coerce to a known archangel; if not, fall back to a neutral circle.
@@ -81,16 +88,28 @@ export function ArchangelAvatar({
       )}
       style={{ width: framePx, height: framePx }}
     >
-      {/* Sphere geometry halo */}
+      {/* Sphere geometry halo — always visible at low opacity as a base layer */}
       {known && (
         <SphereGeometry
           archangel={known}
           size={framePx}
           className={cn(
-            "absolute inset-0",
+            "absolute inset-0 opacity-30",
             working && "archangel-pulse",
           )}
         />
+      )}
+
+      {/* Hover overlay — a second geometry layer that glows and spins on hover.
+          Requires the parent to carry the Tailwind `group` class. */}
+      {known && hoverable && (
+        <span className="geometry-hover-overlay absolute inset-0">
+          <SphereGeometry
+            archangel={known}
+            size={framePx}
+            className="geometry-hover-spin absolute inset-0"
+          />
+        </span>
       )}
 
       {/* Portrait — circular crop centered inside the geometry */}

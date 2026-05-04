@@ -60,7 +60,7 @@ function DashboardHeader() {
           fontWeight: 500,
           margin: 0,
         }}>
-          Workspace Intelligence{" "}
+          The Observatory{" "}
           <em style={{
             fontFamily: "EB Garamond, serif",
             fontStyle: "italic",
@@ -68,7 +68,7 @@ function DashboardHeader() {
             color: "#e8c46a",
             letterSpacing: 0,
           }}>
-            read-only overview
+            As above, so below.
           </em>
         </h1>
         <div style={{
@@ -78,7 +78,7 @@ function DashboardHeader() {
           color: "#6a6a6a",
           marginTop: 12,
         }}>
-          subagent fleet &middot; suno pipeline &middot; chakra frequency system &middot; achievement tracking
+          the choir at work &middot; the records kept
         </div>
       </div>
       <div style={{ display: "flex", gap: 36, alignItems: "flex-end" }}>

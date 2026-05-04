@@ -209,7 +209,7 @@ export default function CacheEfficiency() {
       borderRadius: 10,
       padding: "20px 24px",
     }}>
-      <SectionHeader title="CACHE EFFICIENCY · 30D" meta={metaNode} />
+      <SectionHeader title="MEMORIA · 30D" meta={metaNode} />
 
       {isLoading && (
         <div style={{

@@ -168,7 +168,7 @@ export default function UsageTrend() {
     }}>
       {/* header row */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-        <SectionHeader title="USAGE TREND · 30D" />
+        <SectionHeader title="THE EPHEMERIS · 30D" />
         <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
           {([7, 14, 30] as Period[]).map((p) => (
             <PeriodButton

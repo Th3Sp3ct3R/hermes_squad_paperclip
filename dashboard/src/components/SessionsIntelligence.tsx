@@ -242,7 +242,7 @@ export default function SessionsIntelligence() {
       borderRadius: 10,
       padding: "20px 24px",
     }}>
-      <SectionHeader title="SESSIONS INTELLIGENCE" meta={metaStr} />
+      <SectionHeader title="THE HERMETICA" meta={metaStr} />
 
       {isLoading && (
         <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
