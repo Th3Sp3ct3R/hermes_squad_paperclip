@@ -23,6 +23,7 @@ import { Bot, LayoutDashboard } from "lucide-react";
 import { ArchangelAvatar } from "@/components/ArchangelAvatar";
 import { CaduceusMark } from "@/components/CaduceusMark";
 import { HermeticPanelsRow } from "@/components/dashboard/HermeticPanels";
+import { MechanismRow } from "@/components/dashboard/HermeticMechanism";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { WorkspacePulse } from "../components/dashboard/WorkspacePulse";
 import { AgentActivityBar } from "../components/dashboard/AgentActivityBar";
@@ -632,6 +633,9 @@ export function Dashboard() {
             activity={activity ?? null}
             runs={(runs as any) ?? null}
           />
+
+          {/* ── The Celestial Mechanism: Planetary Hour + Heptachord + Monochord ── */}
+          <MechanismRow sunoIssues={sunoIssues ?? null} />
 
           {/* ── Songs Metrics · Brainwave Tuning · Chakra Roots ─────────── */}
           <SongsMetricsPanel companyId={selectedCompanyId!} />

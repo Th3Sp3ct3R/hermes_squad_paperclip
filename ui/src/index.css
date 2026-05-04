@@ -891,6 +891,20 @@ a.paperclip-project-mention-chip {
   transition: transform 80ms linear, filter 80ms linear;
 }
 
+/* Monochord pulse — Sandalphon's master string flashes when a song is
+   freshly published. 60-second window, slow gentle breathe. */
+@keyframes monochord-pulse {
+  0%, 100% {
+    box-shadow: 0 0 4px rgba(255,255,255,0.2);
+    opacity: 0.85;
+  }
+  50% {
+    box-shadow: 0 0 12px #fff, 0 0 24px rgba(255,255,255,0.6);
+    opacity: 1;
+  }
+}
+.monochord-pulse { animation: monochord-pulse 3.2s ease-in-out infinite; }
+
 /* Subtle Flower-of-Life backdrop for the Suno page (and any opt-in surface). */
 .suno-flower-backdrop {
   background-image:
