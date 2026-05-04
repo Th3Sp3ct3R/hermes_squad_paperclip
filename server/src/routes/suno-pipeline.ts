@@ -41,6 +41,7 @@ import {
 } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { logActivity, publishLiveEvent } from "../services/index.js";
+import { logger } from "../middleware/logger.js";
 import {
   buildLyricsPrompt,
   buildSoundPromptPrompt,
@@ -59,6 +60,11 @@ import {
   type MinimaxMusicModel,
 } from "../services/minimax-music.js";
 import { generateViaSuno } from "../services/suno-browser-agent.js";
+import {
+  parseBatchRequest,
+  runWithConcurrency,
+  type BatchPlan,
+} from "../services/suno-batch.js";
 import {
   buildMiniMaxPrompt,
   MOOD_PRESETS,
@@ -232,6 +238,52 @@ const dispatchSunoSchema = z.object({
   companyId: z.string().uuid(),
   /** Override the prompt (defaults to metadata.stages.soundPrompt). */
   prompt: z.string().min(1).max(2000).optional(),
+});
+
+/** Phase 9 — NLP batch generation ("10 hours of deep focus music" → N issues). */
+const batchParseSchema = z.object({
+  companyId: z.string().uuid(),
+  request: z.string().min(3).max(2000),
+  /** Cap song count even if the LLM/duration math suggests more. Defaults 200. */
+  maxSongCount: z.number().int().min(1).max(500).optional(),
+});
+
+const batchCreateSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Either pass a plan directly (after /batch/parse) OR a request to parse fresh. */
+  plan: z
+    .object({
+      request: z.string(),
+      totalDurationMinutes: z.number(),
+      songCount: z.number().int().min(1),
+      averageSongMinutes: z.number(),
+      targetChakra: chakraSchema,
+      targetFrequency: z.number().int().positive(),
+      genre: z.string(),
+      masterConcept: z.string(),
+      masterSoundPrompt: z.string(),
+      variations: z
+        .array(
+          z.object({
+            title: z.string().min(1).max(120),
+            concept: z.string().min(1).max(300),
+            soundPrompt: z.string().min(1).max(2000),
+          }),
+        )
+        .min(1)
+        .max(500),
+    })
+    .optional(),
+  request: z.string().min(3).max(2000).optional(),
+  maxSongCount: z.number().int().min(1).max(500).optional(),
+});
+
+const batchExecuteSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Backend per song. Default "minimax" (fast, server-side, no Chrome dep). */
+  musicBackend: z.enum(["minimax", "suno"]).default("minimax"),
+  /** Max concurrent generations. Default 5. Suno backend forces 1 (browser bound). */
+  concurrency: z.number().int().min(1).max(20).default(5),
 });
 
 /**
@@ -1335,6 +1387,477 @@ export function sunoPipelineRoutes(db: Db) {
       });
 
       res.json(row);
+    },
+  );
+
+  // ──────────────────────────────────────────────────────────────────────
+  //   PHASE 9 — NLP BATCH GENERATION
+  //   "10 hours of deep focus music" → N unique issues with creative titles
+  // ──────────────────────────────────────────────────────────────────────
+
+  // ── POST /batch/parse ────────────────────────────────────────────────
+  // Parse an NLP request into a structured BatchPlan (no creation yet).
+  // Lets the caller see the planned songCount + titles before committing.
+  router.post(
+    "/suno-pipeline/batch/parse",
+    validate(batchParseSchema),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof batchParseSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const actor = getActorInfo(req);
+      const plan = await parseBatchRequest(
+        { request: body.request, maxSongCount: body.maxSongCount },
+        { db, companyId: body.companyId, agentId: actor.agentId },
+      );
+      res.json(plan);
+    },
+  );
+
+  // ── POST /batch/create ───────────────────────────────────────────────
+  // Materialize a BatchPlan as N sunoIssues. Each variation becomes one
+  // issue with concept = variation.title, soundPrompt cached in
+  // metadata.stages, and metadata.batchId linking siblings together.
+  // Status starts at GENERATING since we know the prompt is set.
+  router.post(
+    "/suno-pipeline/batch/create",
+    validate(batchCreateSchema),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof batchCreateSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const actor = getActorInfo(req);
+
+      let plan: BatchPlan;
+      if (body.plan) {
+        plan = body.plan as BatchPlan;
+      } else if (body.request) {
+        plan = await parseBatchRequest(
+          { request: body.request, maxSongCount: body.maxSongCount },
+          { db, companyId: body.companyId, agentId: actor.agentId },
+        );
+      } else {
+        throw unprocessable("batch/create requires either `plan` or `request`");
+      }
+
+      const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      // Insert all N issues in a single batch insert. Returns the created rows.
+      const valuesToInsert = plan.variations.map((v, idx) => ({
+        companyId: body.companyId,
+        concept: v.title, // The TITLE becomes the visible concept on the kanban
+        targetChakra: plan.targetChakra,
+        targetFrequency: plan.targetFrequency,
+        genre: plan.genre,
+        status: "GENERATING" as SunoStatus,
+        metadata: {
+          stages: {
+            soundPrompt: v.soundPrompt,
+          },
+          batchId,
+          batchSequence: idx + 1,
+          batchTotal: plan.variations.length,
+          batchRequest: plan.request,
+          batchMasterConcept: plan.masterConcept,
+          variationConcept: v.concept,
+          history: [
+            {
+              stage: "batch.created",
+              output: `Issue ${idx + 1}/${plan.variations.length} of batch "${plan.request}"`,
+              at: new Date().toISOString(),
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              agentName: "Null Angel (batch)",
+              status: "GENERATING" as SunoStatus,
+            },
+          ],
+        },
+      }));
+
+      const created = await db.insert(sunoIssues).values(valuesToInsert).returning();
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.batch_created",
+        entityType: "suno_issue",
+        entityId: created[0]?.id,
+        details: {
+          batchId,
+          songCount: created.length,
+          totalDurationMinutes: plan.totalDurationMinutes,
+          targetChakra: plan.targetChakra,
+          masterConcept: plan.masterConcept.slice(0, 200),
+        },
+      });
+
+      res.status(201).json({
+        batchId,
+        plan,
+        issueCount: created.length,
+        issueIds: created.map((i) => i.id),
+      });
+    },
+  );
+
+  // ── POST /batch/:batchId/execute ─────────────────────────────────────
+  // Fire all sibling issues through the music backend with bounded
+  // concurrency. Default backend is MiniMax (fast, server-side, no Chrome
+  // dep). For Suno, concurrency forces to 1 because the browser agent is
+  // single-tab.
+  router.post(
+    "/suno-pipeline/batch/:batchId/execute",
+    validate(batchExecuteSchema),
+    async (req, res) => {
+      const batchId = req.params.batchId as string;
+      const body = req.body as z.infer<typeof batchExecuteSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const actor = getActorInfo(req);
+
+      // Locate all sibling issues. Pull the ones still in GENERATING (skip
+      // already-completed ones so re-running execute is idempotent).
+      const siblings = await db
+        .select()
+        .from(sunoIssues)
+        .where(
+          and(
+            eq(sunoIssues.companyId, body.companyId),
+            sql`${sunoIssues.metadata}->>'batchId' = ${batchId}`,
+          ),
+        );
+
+      const todo = siblings.filter((s) => {
+        if (s.status === "PUBLISHED" || s.status === "FAILED") return false;
+        const meta = (s.metadata ?? {}) as Record<string, unknown>;
+        const stages = (meta.stages && typeof meta.stages === "object"
+          ? (meta.stages as Record<string, unknown>)
+          : {}) as Record<string, unknown>;
+        // Already has audio — skip
+        if (s.minimaxAudioUrl || stages.audioUrl) return false;
+        return true;
+      });
+
+      if (todo.length === 0) {
+        res.json({
+          batchId,
+          totalSiblings: siblings.length,
+          executed: 0,
+          message: "All sibling issues already have audio or are terminal.",
+        });
+        return;
+      }
+
+      const concurrency = body.musicBackend === "suno" ? 1 : body.concurrency;
+
+      logger.info(
+        {
+          batchId,
+          backend: body.musicBackend,
+          concurrency,
+          todoCount: todo.length,
+        },
+        "[batch.execute] starting bulk generation",
+      );
+
+      // Respond IMMEDIATELY with the plan — the actual execution runs in
+      // the background. The route doesn't wait for 100+ generations to
+      // complete; the caller polls /batches/:id for status.
+      res.status(202).json({
+        batchId,
+        backend: body.musicBackend,
+        concurrency,
+        totalSiblings: siblings.length,
+        executing: todo.length,
+        message: `Firing ${todo.length} generations in background with concurrency=${concurrency}`,
+      });
+
+      // ── Inner helper: after audio lands, fire Jophiel's visual prompt +
+      //    cover art. Best-effort — if either step fails we log and keep
+      //    the issue in REVIEW with audio but no thumbnail. The Hermes
+      //    Albedo aesthetic is baked into buildVisualPromptPrompt.
+      const generateThumbnail = async (issueId: string) => {
+        try {
+          const fresh = await db
+            .select()
+            .from(sunoIssues)
+            .where(eq(sunoIssues.id, issueId))
+            .limit(1);
+          const cur = fresh[0];
+          if (!cur) return;
+          const meta = (cur.metadata ?? {}) as Record<string, unknown>;
+          const stages = (meta.stages && typeof meta.stages === "object"
+            ? (meta.stages as Record<string, unknown>)
+            : {}) as Record<string, unknown>;
+
+          // Step 1: Jophiel writes the visual prompt
+          const visualMessages = buildVisualPromptPrompt({
+            concept: cur.concept,
+            targetChakra: cur.targetChakra ?? "THIRD_EYE",
+            targetFrequency: cur.targetFrequency ?? 852,
+            genre: cur.genre,
+            soundPrompt:
+              typeof stages.soundPrompt === "string"
+                ? (stages.soundPrompt as string)
+                : undefined,
+          });
+          const visualPrompt = await callOpenRouter({
+            messages: visualMessages,
+            temperature: 0.7,
+            maxTokens: 500,
+          });
+
+          // Step 2: render cover art with Hermes Albedo aesthetic
+          const coverArt = await generateCoverArt({
+            prompt: visualPrompt,
+            aspectRatio: "1:1",
+            imageSize: "1K",
+          });
+
+          // Step 3: persist
+          const meta2 = { ...meta };
+          const stages2 = { ...stages, visualPrompt, thumbnailUrl: coverArt.dataUrl };
+          await db
+            .update(sunoIssues)
+            .set({
+              thumbnailUrl: coverArt.dataUrl,
+              metadata: appendHistory(
+                { ...meta2, stages: stages2, lastCoverArtModel: coverArt.model },
+                {
+                  stage: "thumbnailUrl",
+                  output: {
+                    mimeType: coverArt.mimeType,
+                    dataUrlBytes: coverArt.dataUrl.length,
+                    elapsedMs: coverArt.elapsedMs,
+                  },
+                  at: new Date().toISOString(),
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  agentName: "Jophiel (batch)",
+                  status: cur.status as SunoStatus,
+                },
+              ),
+              updatedAt: new Date(),
+            })
+            .where(eq(sunoIssues.id, issueId));
+        } catch (err) {
+          logger.warn(
+            {
+              issueId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            "[batch.execute] thumbnail generation failed (non-fatal)",
+          );
+        }
+      };
+
+      // Background execution. Errors per-job don't fail the whole batch.
+      runWithConcurrency(todo, concurrency, async (issue) => {
+        const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+        const stages = (meta.stages && typeof meta.stages === "object"
+          ? (meta.stages as Record<string, unknown>)
+          : {}) as Record<string, unknown>;
+        const soundPrompt =
+          (typeof stages.soundPrompt === "string" ? stages.soundPrompt : "") ||
+          issue.concept;
+
+        if (body.musicBackend === "minimax") {
+          const chakraKey = (issue.targetChakra ?? null) as ChakraKey | null;
+          const minimaxPrompt = buildMiniMaxPrompt(soundPrompt, chakraKey, null);
+          const result = await generateMinimaxMusic({
+            model: MINIMAX_MUSIC_MODELS.free,
+            prompt: minimaxPrompt,
+            lyrics: "",
+            outputUrl: true,
+            isInstrumental: true,
+            audioSetting: { sampleRate: 44100, bitrate: 256000, format: "mp3" },
+            context: { db, companyId: body.companyId, sunoIssueId: issue.id },
+          });
+          if (!result.isUrl) throw new Error("MiniMax returned hex audio; expected URL");
+          const persisted = await persistMinimaxAudio({
+            db,
+            companyId: body.companyId,
+            audioUrl: result.audio,
+            traceId: result.traceId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          const songId = result.traceId ? `minimax:${result.traceId}` : `minimax:${Date.now()}`;
+          await db
+            .update(sunoIssues)
+            .set({
+              minimaxAudioUrl: persisted.contentPath,
+              minimaxSongId: songId,
+              minimaxStatus: result.baseStatusCode,
+              status: "REVIEW",
+              metadata: appendHistory(
+                {
+                  ...meta,
+                  stages: {
+                    ...stages,
+                    minimaxAudioUrl: persisted.contentPath,
+                    minimaxSongId: songId,
+                    minimaxAssetId: persisted.assetId,
+                    minimaxOriginalUrl: result.audio,
+                  },
+                  lastMusicBackend: "minimax",
+                  lastMusicModel: result.model,
+                  minimaxTraceId: result.traceId,
+                },
+                {
+                  stage: "minimaxAudioUrl",
+                  output: persisted.contentPath,
+                  at: new Date().toISOString(),
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  agentName: "Raziel/MiniMax (batch)",
+                  status: "REVIEW" as SunoStatus,
+                },
+              ),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, issue.id), eq(sunoIssues.companyId, body.companyId)));
+          await generateThumbnail(issue.id);
+          return { kind: "minimax", songId, audioUrl: persisted.contentPath };
+        }
+
+        // Suno backend — sequential through the same browser tab.
+        const sunoResult = await generateViaSuno(soundPrompt);
+        await db
+          .update(sunoIssues)
+          .set({
+            audioUrl: sunoResult.audioUrl,
+            sunoSongId: sunoResult.songId,
+            status: "REVIEW",
+            metadata: appendHistory(
+              {
+                ...meta,
+                stages: {
+                  ...stages,
+                  audioUrl: sunoResult.audioUrl,
+                  sunoSongId: sunoResult.songId,
+                  sunoVariants: sunoResult.variants,
+                },
+                lastMusicBackend: "suno",
+              },
+              {
+                stage: "audioUrl",
+                output: sunoResult.audioUrl,
+                at: new Date().toISOString(),
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                agentName: "Raziel/Suno (batch)",
+                status: "REVIEW" as SunoStatus,
+              },
+            ),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(sunoIssues.id, issue.id), eq(sunoIssues.companyId, body.companyId)));
+        await generateThumbnail(issue.id);
+        return { kind: "suno", songId: sunoResult.songId, audioUrl: sunoResult.audioUrl };
+      })
+        .then((results) => {
+          const succeeded = results.filter((r) => r.ok).length;
+          const failed = results.length - succeeded;
+          logger.info(
+            { batchId, succeeded, failed, total: results.length },
+            "[batch.execute] batch complete",
+          );
+          return logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.batch_execute_complete",
+            entityType: "suno_issue",
+            entityId: todo[0]?.id,
+            details: { batchId, succeeded, failed, total: results.length, backend: body.musicBackend },
+          });
+        })
+        .catch((err) => {
+          logger.error(
+            { batchId, error: err instanceof Error ? err.message : String(err) },
+            "[batch.execute] runWithConcurrency outer failure",
+          );
+        });
+    },
+  );
+
+  // ── GET /batches ─────────────────────────────────────────────────────
+  // List all batches for a company, with per-batch progress counts.
+  router.get(
+    "/suno-pipeline/batches",
+    async (req, res) => {
+      const companyId = String(req.query.companyId ?? "");
+      if (!companyId) throw unprocessable("companyId is required");
+      assertCompanyAccess(req, companyId);
+
+      const all = await db
+        .select()
+        .from(sunoIssues)
+        .where(
+          and(
+            eq(sunoIssues.companyId, companyId),
+            sql`${sunoIssues.metadata}->>'batchId' IS NOT NULL`,
+          ),
+        );
+
+      // Group by batchId, aggregate counts
+      const byBatch = new Map<
+        string,
+        {
+          batchId: string;
+          masterConcept: string;
+          batchRequest: string;
+          total: number;
+          ready: number;
+          pending: number;
+          failed: number;
+          createdAt: string;
+          targetChakra: string | null;
+        }
+      >();
+
+      for (const issue of all) {
+        const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+        const batchId = String(meta.batchId ?? "");
+        if (!batchId) continue;
+        const masterConcept = String(meta.batchMasterConcept ?? "");
+        const batchRequest = String(meta.batchRequest ?? "");
+        let entry = byBatch.get(batchId);
+        if (!entry) {
+          entry = {
+            batchId,
+            masterConcept,
+            batchRequest,
+            total: 0,
+            ready: 0,
+            pending: 0,
+            failed: 0,
+            createdAt: issue.createdAt.toISOString(),
+            targetChakra: issue.targetChakra ?? null,
+          };
+          byBatch.set(batchId, entry);
+        }
+        entry.total += 1;
+        if (issue.status === "FAILED") entry.failed += 1;
+        else if (
+          issue.audioUrl ||
+          issue.minimaxAudioUrl ||
+          issue.status === "REVIEW" ||
+          issue.status === "APPROVED" ||
+          issue.status === "PUBLISHED"
+        )
+          entry.ready += 1;
+        else entry.pending += 1;
+      }
+
+      res.json(Array.from(byBatch.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     },
   );
 
