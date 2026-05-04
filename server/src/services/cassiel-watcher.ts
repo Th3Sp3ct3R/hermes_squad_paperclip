@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/db";
 import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { withArchangelRun } from "./archangel-heartbeat.js";
+import { agentMessagesService } from "./agent-messages.js";
 
 const STUCK_THRESHOLD_MINUTES = 10; // older than this and still GENERATING → suspect
 const HARD_FAIL_THRESHOLD_HOURS = 6; // older than this → flip to FAILED
@@ -132,12 +133,30 @@ export async function runCassielScan(
         const batchId = typeof meta.batchId === "string" ? meta.batchId : null;
         if (batchId) batchIds.add(batchId);
       }
+      // Resolve Cassiel + Michael agent ids once for the message channel below.
+      const [cassielRow] = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.name, "Cassiel")))
+        .limit(1);
+      const [michaelRow] = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.name, "Michael")))
+        .limit(1);
+      const messages = agentMessagesService(db);
+
       for (const batchId of batchIds) {
         const witness = stuck.find(
           (s) =>
             ((s.metadata ?? {}) as Record<string, unknown>).batchId === batchId,
         );
         if (!witness) continue;
+        const stuckCount = stuck.filter(
+          (s) =>
+            ((s.metadata ?? {}) as Record<string, unknown>).batchId === batchId,
+        ).length;
+
         await db.insert(activityLog).values({
           companyId,
           actorType: "agent",
@@ -145,14 +164,36 @@ export async function runCassielScan(
           action: "suno_issue.cassiel_stuck_batch_detected",
           entityType: "suno_issue",
           entityId: witness.id,
-          details: {
-            batchId,
-            stuckCount: stuck.filter(
-              (s) =>
-                ((s.metadata ?? {}) as Record<string, unknown>).batchId === batchId,
-            ).length,
-          },
+          details: { batchId, stuckCount },
         });
+
+        // Open an agent_message thread Cassiel→Michael — this is what makes
+        // the alert actionable. Michael's inbox now has a request he can
+        // respond to (re-fire execute, or escalate to user).
+        if (cassielRow && michaelRow) {
+          await messages
+            .send({
+              companyId,
+              fromAgentId: cassielRow.id,
+              toAgentId: michaelRow.id,
+              kind: "alert",
+              subject: `Stuck batch ${batchId.slice(0, 12)}…`,
+              body: `Commander, the working **${batchId}** has been seated in GENERATING for over ${STUCK_THRESHOLD_MINUTES} minutes. ${stuckCount} issue${stuckCount > 1 ? "s" : ""} have not produced audio. Either fire \`POST /api/suno-pipeline/batch/${batchId}/execute\` or surface to the operator.`,
+              bodyMeta: {
+                batchId,
+                stuckCount,
+                witnessIssueId: witness.id,
+              },
+              entityType: "suno_issue",
+              entityId: witness.id,
+            })
+            .catch((err) =>
+              logger.warn(
+                { err: err instanceof Error ? err.message : String(err) },
+                "[cassiel] failed to message Michael — non-fatal",
+              ),
+            );
+        }
       }
 
       return {
