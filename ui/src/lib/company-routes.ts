@@ -1,4 +1,4 @@
-const BOARD_ROUTE_ROOTS = new Set([
+export const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
   "companies",
   "company",
@@ -13,6 +13,14 @@ const BOARD_ROUTE_ROOTS = new Set([
   "activity",
   "inbox",
   "design-guide",
+  // Plugin routes live under /<companyPrefix>/plugins/... — without "plugins"
+  // in this set, applyCompanyPrefix() would treat /plugins/foo as having
+  // company prefix "PLUGINS" and skip the prefix injection, resulting in a
+  // "Company not found" 404 when the sidebar Hermes Feed launcher fires.
+  "plugins",
+  // Suno + Hermes pages also live under /<companyPrefix>/...
+  "hermes",
+  "suno",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "docs", "instance"]);

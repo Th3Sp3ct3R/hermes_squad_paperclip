@@ -107,6 +107,8 @@ export const queryKeys = {
   skills: {
     available: ["skills", "available"] as const,
   },
+  usageStats: (companyId: string, days?: number) =>
+    ["usage-stats", companyId, days ?? 30] as const,
   plugins: {
     all: ["plugins"] as const,
     examples: ["plugins", "examples"] as const,

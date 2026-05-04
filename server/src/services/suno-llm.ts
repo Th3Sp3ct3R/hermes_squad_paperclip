@@ -1,0 +1,309 @@
+/**
+ * Suno-pipeline LLM service — calls OpenRouter to generate lyrics, sound
+ * prompts, visual prompts, and release copy on behalf of the creative
+ * archangels (Zadkiel, Uriel, Jophiel, Gabriel).
+ *
+ * Defaults to OpenRouter's :free tier so the pipeline runs at zero cost
+ * during dev. Configure via env:
+ *
+ *   OPENROUTER_API_KEY      — required
+ *   OPENROUTER_MODEL        — default model (override per call still works)
+ *   OPENROUTER_BASE_URL     — defaults to https://openrouter.ai/api/v1
+ *   OPENROUTER_REFERER      — request attribution (defaults to paperclip.ing)
+ *   OPENROUTER_APP_TITLE    — request attribution (defaults to "Paperclip Suno Pipeline")
+ */
+import type { Db } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
+import { logUsage } from "./usage-log.js";
+import {
+  buildUrielSystemPrompt,
+  buildZadkielSystemPrompt,
+  MOOD_PRESETS,
+} from "./null-angel-identity.js";
+
+const OPENROUTER_BASE =
+  process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
+
+/**
+ * Per-archangel default model. All :free for now per The Architect's directive.
+ * Tunable per call via the {@link callOpenRouter} `model` option, and the
+ * fallback can be overridden at process scope via OPENROUTER_MODEL. Per-agent
+ * overrides come from `agents.runtimeConfig.model` (see runGenerate in the
+ * suno-pipeline route).
+ */
+export const SUNO_MODELS = {
+  /** Zadkiel — lyrics, creative writing. */
+  lyrics: "minimax/minimax-m2.5:free",
+  /** Uriel — Suno description text, structured + tag-heavy. */
+  soundPrompt: "minimax/minimax-m2.5:free",
+  /** Jophiel — image gen prompt, vivid sensory detail. */
+  visualPrompt: "minimax/minimax-m2.5:free",
+  /** Gabriel — release notes, social copy. */
+  releaseCopy: "minimax/minimax-m2.5:free",
+} as const;
+
+const FALLBACK_MODEL =
+  process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
+
+interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface OpenRouterCallOpts {
+  model?: string;
+  messages: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  /**
+   * If true, throw a clear error when the env key is missing rather than
+   * making a doomed request. Defaults to true.
+   */
+  requireKey?: boolean;
+  /**
+   * Optional context for usage tracking. When provided (with db + companyId),
+   * the call will fire-and-forget a usage log entry after completion.
+   */
+  context?: {
+    db?: Db;
+    companyId?: string;
+    stage?: string;
+    sunoIssueId?: string;
+    agentId?: string;
+  };
+}
+
+export interface SunoLlmContext {
+  concept: string;
+  targetChakra: string;
+  targetFrequency: number;
+  genre: string | null;
+  /** Optional — when present, downstream prompts can reference earlier work. */
+  lyrics?: string;
+  soundPrompt?: string;
+  /** Optional override hints from the caller (e.g. mood, BPM, theta-band). */
+  hints?: Record<string, unknown>;
+  /** Mood preset ID — when set, Uriel uses the preset's basePrompt + brainwave stack as foundation. */
+  moodPresetId?: string;
+}
+
+/**
+ * Make a single chat-completion call to OpenRouter. Returns the assistant's
+ * trimmed text content. Throws on auth failure, network error, or empty
+ * response.
+ */
+export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if ((opts.requireKey ?? true) && !key) {
+    throw new Error(
+      "OPENROUTER_API_KEY is not configured — set it in the server env to use suno generation",
+    );
+  }
+
+  const model = opts.model ?? FALLBACK_MODEL;
+  const startedAt = Date.now();
+
+  let res: Response;
+  try {
+    res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key ?? ""}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.OPENROUTER_REFERER ?? "https://paperclip.ing",
+        "X-Title": process.env.OPENROUTER_APP_TITLE ?? "Paperclip Suno Pipeline",
+      },
+      body: JSON.stringify({
+        model,
+        messages: opts.messages,
+        temperature: opts.temperature ?? 0.8,
+        max_tokens: opts.maxTokens ?? 1500,
+      }),
+    });
+  } catch (err) {
+    throw new Error(
+      `OpenRouter network error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => `${res.status}`);
+    throw new Error(
+      `OpenRouter error (${res.status}): ${errorText.slice(0, 500)}`,
+    );
+  }
+
+  const data = (await res.json()) as {
+    choices?: { message?: { content?: string } }[];
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+    };
+  };
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || content.length === 0) {
+    throw new Error("OpenRouter returned no content");
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  const usage = data.usage;
+  const promptTokens = usage?.prompt_tokens ?? "?";
+  const completionTokens = usage?.completion_tokens ?? "?";
+  logger.info(
+    `[suno-llm] call complete model=${model} elapsedMs=${elapsedMs} promptTokens=${promptTokens} completionTokens=${completionTokens}`,
+  );
+
+  // Fire-and-forget usage logging when context is provided
+  if (opts.context?.db && opts.context?.companyId) {
+    logUsage(opts.context.db, {
+      companyId: opts.context.companyId,
+      provider: "openrouter",
+      model,
+      callType: "llm",
+      stage: opts.context.stage,
+      sunoIssueId: opts.context.sunoIssueId,
+      agentId: opts.context.agentId,
+      tokensIn: typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : 0,
+      tokensOut: typeof usage?.completion_tokens === "number" ? usage.completion_tokens : 0,
+      tokensCached: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      tokensTotal: typeof usage?.total_tokens === "number" ? usage.total_tokens : 0,
+      durationMs: elapsedMs,
+      statusCode: 200,
+      success: true,
+    }).catch(() => {});
+  }
+
+  return content.trim();
+}
+
+// ── Prompt builders ────────────────────────────────────────────────────────
+// Each archangel has a system prompt that locks in their voice + a user
+// message that injects the song's context. Output contracts are kept
+// machine-friendly (no prose preambles, no markdown explanations).
+
+export function buildLyricsPrompt(ctx: SunoLlmContext): ChatMessage[] {
+  // Melody-first ordering: when ctx.soundPrompt is present (Uriel ran first),
+  // Zadkiel writes lyrics that respect the BPM, key, mood, and cadence Uriel
+  // described. When soundPrompt is absent, Zadkiel writes from the concept
+  // alone (back-compat for stand-alone lyric generation).
+  const hasSoundContext = !!ctx.soundPrompt && ctx.soundPrompt.length > 0;
+  return [
+    {
+      role: "system",
+      content: buildZadkielSystemPrompt(),
+    },
+    {
+      role: "user",
+      content: [
+        `Concept: ${ctx.concept}`,
+        `Target chakra: ${ctx.targetChakra} (${ctx.targetFrequency} Hz Solfeggio carrier)`,
+        `Genre: ${ctx.genre ?? "open"}`,
+        hasSoundContext
+          ? `Sonic brief from Uriel (match BPM/cadence/mood):\n${ctx.soundPrompt!.slice(0, 1500)}`
+          : null,
+        ctx.hints && Object.keys(ctx.hints).length > 0
+          ? `Hints: ${JSON.stringify(ctx.hints)}`
+          : null,
+        "",
+        "Write the lyrics now.",
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
+    },
+  ];
+}
+
+export function buildSoundPromptPrompt(ctx: SunoLlmContext): ChatMessage[] {
+  // Resolve mood preset if provided — Uriel uses it as creative foundation
+  const preset = ctx.moodPresetId
+    ? MOOD_PRESETS.find((p) => p.id === ctx.moodPresetId) ?? null
+    : null;
+
+  return [
+    {
+      role: "system",
+      content: buildUrielSystemPrompt(preset),
+    },
+    {
+      role: "user",
+      content: [
+        `Concept: ${ctx.concept}`,
+        `Target chakra: ${ctx.targetChakra} (${ctx.targetFrequency} Hz)`,
+        `Genre: ${ctx.genre ?? "open"}`,
+        preset ? `Mode: ${preset.label} (${preset.brainwave} @ ${preset.hz ?? "edge"} Hz, carrier ${preset.carrier ?? "none"} Hz, BPM ${preset.bpm[0]}-${preset.bpm[1]})` : null,
+        ctx.lyrics ? `Lyrics already written:\n${ctx.lyrics.slice(0, 1500)}` : null,
+        ctx.hints && Object.keys(ctx.hints).length > 0
+          ? `Hints: ${JSON.stringify(ctx.hints)}`
+          : null,
+        "",
+        "Write the music description now. Make it unique — different imagery and textures than last time, same sonic territory.",
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
+    },
+  ];
+}
+
+export function buildVisualPromptPrompt(ctx: SunoLlmContext): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: `You are Jophiel, the Visual Art Archangel. You compose image-generation prompts for cover art that reflects the song's chakra energy and mood.
+
+Output contract:
+- A SINGLE paragraph, 50–140 words.
+- No markdown. No preamble.
+- Specify: scene/composition, color palette (matched to chakra), lighting, atmosphere, art style/medium, aspect ratio (1:1 square for cover).
+- Avoid text-in-image instructions (image gens are bad at text).
+- Avoid cliche ("vibrant", "stunning"). Be sensory and specific.
+
+The output is fed directly to an image-gen API (FAL / Gemini Image / SDXL).`,
+    },
+    {
+      role: "user",
+      content: [
+        `Concept: ${ctx.concept}`,
+        `Target chakra: ${ctx.targetChakra}`,
+        `Genre: ${ctx.genre ?? "open"}`,
+        ctx.soundPrompt
+          ? `Sonic palette (for visual matching):\n${ctx.soundPrompt.slice(0, 800)}`
+          : null,
+        "",
+        "Write the cover-art prompt now.",
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
+    },
+  ];
+}
+
+export function buildReleaseCopyPrompt(ctx: SunoLlmContext): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: `You are Gabriel, the Communications Archangel. You write release copy when a song ships: a tight social caption + a short release-notes block.
+
+Output contract — return EXACTLY this JSON shape, no markdown fences, no commentary:
+{
+  "caption": "<140 chars max, single line, no hashtag spam>",
+  "hashtags": ["#tag1","#tag2", ... up to 6 relevant tags],
+  "releaseNotes": "<2–3 short paragraphs, 80–180 words total, voice = the archangel scribe + a knowing producer>"
+}`,
+    },
+    {
+      role: "user",
+      content: [
+        `Concept: ${ctx.concept}`,
+        `Target chakra: ${ctx.targetChakra} (${ctx.targetFrequency} Hz)`,
+        `Genre: ${ctx.genre ?? "open"}`,
+        ctx.lyrics ? `Lyrics excerpt:\n${ctx.lyrics.slice(0, 800)}` : null,
+        "",
+        "Write the release copy JSON now.",
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
+    },
+  ];
+}

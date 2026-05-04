@@ -1,0 +1,3063 @@
+/**
+ * Suno pipeline routes — full state machine for the autonomous music production
+ * pipeline.
+ *
+ * CRUD:
+ *   GET    /api/suno-pipeline?companyId=...        list issues for a company
+ *   POST   /api/suno-pipeline                      create a new pipeline issue
+ *   PATCH  /api/suno-pipeline/:id?companyId=...    raw update (manual override)
+ *
+ * State machine (Phase 7):
+ *   POST   /api/suno-pipeline/:id/assign           Michael sets the 3 creative agents
+ *   POST   /api/suno-pipeline/:id/deposit          Any agent attaches work output
+ *   POST   /api/suno-pipeline/:id/dispatch         Michael: DRAFT → GENERATING
+ *   POST   /api/suno-pipeline/:id/request-review   Creative agent: GENERATING → REVIEW
+ *   POST   /api/suno-pipeline/:id/approve          Raphael: REVIEW → APPROVED
+ *   POST   /api/suno-pipeline/:id/reject           Raphael: REVIEW → GENERATING + feedback
+ *   POST   /api/suno-pipeline/:id/publish          Sandalphon: APPROVED → PUBLISHED
+ *   POST   /api/suno-pipeline/:id/fail             Any agent: any → FAILED
+ *   GET    /api/suno-pipeline/:id/timeline         Read activity log for this song
+ *
+ * All routes are company-scoped via assertCompanyAccess. Mutations are logged
+ * through the standard activity-log pipeline so they show up in the dashboard
+ * activity feed and live-event stream.
+ */
+import { Router, type Request } from "express";
+import { z } from "zod";
+import { and, asc, eq, sql } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import {
+  sunoIssues,
+  agents as agentsTable,
+  activityLog,
+  goals,
+  projects,
+  issues,
+  companies,
+  SUNO_CHAKRAS,
+  SUNO_STATUSES,
+  SUNO_CHAKRA_FREQUENCIES,
+  type SunoStatus,
+} from "@paperclipai/db";
+import { validate } from "../middleware/validate.js";
+import { logActivity, publishLiveEvent } from "../services/index.js";
+import {
+  buildLyricsPrompt,
+  buildSoundPromptPrompt,
+  buildVisualPromptPrompt,
+  buildReleaseCopyPrompt,
+  callOpenRouter,
+  SUNO_MODELS,
+  type SunoLlmContext,
+} from "../services/suno-llm.js";
+import { generateCoverArt } from "../services/cover-art-gen.js";
+import {
+  generateMinimaxMusic,
+  MINIMAX_MUSIC_MODELS,
+  persistMinimaxAudio,
+  persistAudioFromUrl,
+  type MinimaxMusicModel,
+} from "../services/minimax-music.js";
+import { generateViaSuno } from "../services/suno-browser-agent.js";
+import {
+  buildMiniMaxPrompt,
+  MOOD_PRESETS,
+  type ChakraKey,
+} from "../services/null-angel-identity.js";
+import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
+
+// ── Schemas ────────────────────────────────────────────────────────────────
+
+const chakraSchema = z.enum(SUNO_CHAKRAS);
+const statusSchema = z.enum(SUNO_STATUSES);
+
+const createSchema = z.object({
+  companyId: z.string().uuid(),
+  concept: z.string().min(1).max(2000),
+  targetChakra: chakraSchema,
+  /**
+   * Optional override — if not provided we derive from chakra. Useful when an
+   * unusual frequency is intended (e.g. detuning experiments).
+   */
+  targetFrequency: z.number().int().positive().optional(),
+  genre: z.string().max(200).nullable().optional(),
+  lyricsAgentId: z.string().uuid().nullable().optional(),
+  soundAgentId: z.string().uuid().nullable().optional(),
+  visualAgentId: z.string().uuid().nullable().optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+const updateSchema = z.object({
+  /**
+   * companyId may be in either body or query (query is the canonical place
+   * for GET-shaped reads, body is friendlier for PATCH). We accept both.
+   */
+  companyId: z.string().uuid().optional(),
+  concept: z.string().min(1).max(2000).optional(),
+  targetChakra: chakraSchema.optional(),
+  targetFrequency: z.number().int().positive().optional(),
+  genre: z.string().max(200).nullable().optional(),
+  lyricsAgentId: z.string().uuid().nullable().optional(),
+  soundAgentId: z.string().uuid().nullable().optional(),
+  visualAgentId: z.string().uuid().nullable().optional(),
+  sunoSongId: z.string().nullable().optional(),
+  audioUrl: z.string().url().nullable().optional(),
+  thumbnailUrl: z.string().url().nullable().optional(),
+  videoUrl: z.string().url().nullable().optional(),
+  minimaxSongId: z.string().nullable().optional(),
+  minimaxAudioUrl: z.string().url().nullable().optional(),
+  minimaxStatus: z.number().int().nullable().optional(),
+  canonAudioVariant: z.enum(["suno", "minimax"]).nullable().optional(),
+  status: statusSchema.optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+// Phase 7 schemas
+
+const assignSchema = z.object({
+  companyId: z.string().uuid(),
+  lyricsAgentId: z.string().uuid(),
+  soundAgentId: z.string().uuid(),
+  visualAgentId: z.string().uuid(),
+});
+
+const depositStages = [
+  "lyrics",
+  "soundPrompt",
+  "visualPrompt",
+  "releaseCopy",
+  "audioUrl",
+  "thumbnailUrl",
+  "videoUrl",
+  "sunoSongId",
+  "variants",
+  "note",
+] as const;
+
+const depositSchema = z.object({
+  companyId: z.string().uuid(),
+  stage: z.enum(depositStages),
+  /** Free-form output — string, url, structured object — depending on stage. */
+  output: z.union([z.string(), z.number(), z.boolean(), z.array(z.unknown()), z.record(z.unknown())]),
+});
+
+const transitionSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Optional human-readable note attached to the transition. */
+  note: z.string().max(2000).optional(),
+});
+
+const rejectSchema = z.object({
+  companyId: z.string().uuid(),
+  feedback: z.string().min(1).max(2000),
+});
+
+const failSchema = z.object({
+  companyId: z.string().uuid(),
+  reason: z.string().min(1).max(2000),
+});
+
+// Phase 8 — generation hooks (OpenRouter)
+const generateSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Optional override of the default model (e.g. test a different free model). */
+  model: z.string().optional(),
+  /** Optional hints to inject into the prompt (mood, BPM, brand voice, etc.). */
+  hints: z.record(z.unknown()).optional(),
+});
+
+// Phase 10 — MiniMax music generation
+const minimaxMusicSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Override the default music model (defaults to music-2.6-free). */
+  model: z.string().optional(),
+  /** Override the prompt that goes into MiniMax's prompt slot (defaults to metadata.stages.soundPrompt). */
+  prompt: z.string().max(2000).optional(),
+  /** Override the lyrics (defaults to metadata.stages.lyrics). */
+  lyrics: z.string().max(3500).optional(),
+  /** Generate an instrumental track. */
+  isInstrumental: z.boolean().optional(),
+});
+
+// Phase 8.5 — cover-art generation (Jophiel renders the visualPrompt)
+const coverArtSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Override the default OpenRouter image model. */
+  model: z.string().optional(),
+  /** 1:1 default — square cover matching Suno's format. */
+  aspectRatio: z.string().optional(),
+  /** "1K" default. Options: 0.5K, 1K, 2K, 4K (model-dependent). */
+  imageSize: z.string().optional(),
+  /** Override the prompt (defaults to metadata.stages.visualPrompt). */
+  prompt: z.string().min(1).max(4000).optional(),
+});
+
+// Phase 9-A — autonomous orchestration
+const autoRunSchema = z.object({
+  companyId: z.string().uuid(),
+  /**
+   * Music generation backend.
+   *   - "minimax"  — server-side MiniMax music API only (free tier)
+   *   - "suno"     — Raziel browser automation only (CDP → suno.com/create)
+   *   - "parallel" — A/B: MiniMax fires first (faster) + Suno browser
+   *                  automation (writes to minimaxAudioUrl and audioUrl
+   *                  independently). Raphael picks canonAudioVariant.
+   *   - "skip"     — no music gen, leave both url columns null for manual
+   */
+  musicBackend: z.enum(["minimax", "suno", "parallel", "skip"]).default("minimax"),
+  /** Optional hints applied to ALL prompt builders. */
+  hints: z.record(z.unknown()).optional(),
+});
+
+const pickCanonSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Which audio variant becomes the canonical winner. Null clears the pick. */
+  variant: z.enum(["suno", "minimax"]).nullable(),
+});
+
+const dispatchMinimaxSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Override the prompt that goes to MiniMax (defaults to metadata.stages.soundPrompt). */
+  prompt: z.string().min(1).max(2000).optional(),
+  /** Override lyrics (defaults to metadata.stages.lyrics). */
+  lyrics: z.string().min(1).max(3500).optional(),
+  /** Model override — defaults to music-2.6-free. */
+  model: z.string().optional(),
+  /** Generate an instrumental track (skips lyrics requirement). */
+  isInstrumental: z.boolean().optional(),
+});
+
+const dispatchSunoSchema = z.object({
+  companyId: z.string().uuid(),
+  /** Override the prompt (defaults to metadata.stages.soundPrompt). */
+  prompt: z.string().min(1).max(2000).optional(),
+});
+
+/**
+ * Bulk-import a song that was generated outside paperclip (e.g. directly on
+ * suno.com or via the CDP browser test harness). Creates a new sunoIssue,
+ * downloads each variant from the given Suno CDN URL, persists the bytes
+ * via paperclip's storage so the audio survives third-party CDN changes,
+ * and writes the standard pipeline metadata so downstream agents (Jophiel
+ * cover-art, Gabriel release copy, Sandalphon publish) can pick it up.
+ */
+const importSunoSchema = z.object({
+  companyId: z.string().uuid(),
+  concept: z.string().min(1).max(2000),
+  targetChakra: chakraSchema,
+  targetFrequency: z.number().int().positive().optional(),
+  genre: z.string().max(200).nullable().optional(),
+  /**
+   * Sound-prompt that produced these variants. Stored in
+   * metadata.stages.soundPrompt so /generate/visual-prompt and
+   * /generate/cover-art can run against the imported issue.
+   */
+  soundPrompt: z.string().min(1).max(2000),
+  variants: z
+    .array(
+      z.object({
+        sunoSongId: z.string().min(1),
+        sunoUrl: z.string().url(),
+        title: z.string().max(120).optional(),
+      }),
+    )
+    .min(1)
+    .max(8),
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function resolveCompanyId(req: {
+  query: Record<string, unknown>;
+  body?: Record<string, unknown> | null;
+}): string {
+  const fromQuery =
+    typeof req.query.companyId === "string" ? req.query.companyId : null;
+  // GET requests have no body — express.json() leaves req.body undefined.
+  const body = req.body ?? null;
+  const fromBody =
+    body && typeof body.companyId === "string" ? (body.companyId as string) : null;
+  const companyId = fromQuery ?? fromBody;
+  if (!companyId) {
+    throw badRequest("companyId is required (query string or body)");
+  }
+  return companyId;
+}
+
+function paramId(req: { params: Record<string, unknown> }): string {
+  const raw = req.params.id;
+  if (typeof raw !== "string" || !raw) {
+    throw badRequest("id is required");
+  }
+  return raw;
+}
+
+interface HistoryEntry {
+  stage: string;
+  output: unknown;
+  at: string;
+  actorType: string;
+  actorId: string;
+  agentId: string | null;
+  agentName: string | null;
+  status: SunoStatus;
+}
+
+function appendHistory(
+  metadata: Record<string, unknown> | null | undefined,
+  entry: HistoryEntry,
+): Record<string, unknown> {
+  const current = (metadata && typeof metadata === "object" ? metadata : {}) as Record<
+    string,
+    unknown
+  >;
+  const history = Array.isArray(current.history) ? [...(current.history as unknown[])] : [];
+  history.push(entry as unknown);
+  return { ...current, history };
+}
+
+/**
+ * Look up the calling agent's name when the actor is an agent. Used to enforce
+ * role-locked transitions (Raphael for approve/reject, Sandalphon for publish).
+ * Returns null when the actor is a board user (their permissions are checked
+ * separately by assertCompanyAccess).
+ */
+async function resolveActorAgentName(db: Db, req: Request): Promise<string | null> {
+  if (req.actor.type !== "agent" || !req.actor.agentId) return null;
+  const [row] = await db
+    .select({ name: agentsTable.name })
+    .from(agentsTable)
+    .where(eq(agentsTable.id, req.actor.agentId))
+    .limit(1);
+  return row?.name ?? null;
+}
+
+/** Validate a state transition; throws 422 if not allowed. */
+function assertTransition(from: SunoStatus, to: SunoStatus, allowed: SunoStatus[]): void {
+  if (!allowed.includes(from)) {
+    throw unprocessable(
+      `Invalid transition: cannot ${to} from ${from} (allowed sources: ${allowed.join(", ")})`,
+    );
+  }
+}
+
+// ── Route factory ──────────────────────────────────────────────────────────
+
+export function sunoPipelineRoutes(db: Db) {
+  const router = Router();
+
+  /** Load + ownership-check a song. Throws 404 if not found. */
+  async function loadIssueOrThrow(id: string, companyId: string) {
+    const [row] = await db
+      .select()
+      .from(sunoIssues)
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)))
+      .limit(1);
+    if (!row) throw notFound("Suno issue not found");
+    return row;
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Unified hierarchy promotion (option C) — every sunoIssue is also a real
+  // `issues` row under a "Music Orchestra" project under a "Songs" goal, so
+  // songs show up everywhere the rest of the work tracking does (Issues
+  // board, project pages, Hermes Feed, TASKS.md, etc.).
+  // ────────────────────────────────────────────────────────────────────────
+
+  const MUSIC_GOAL_NAME = "Songs";
+  const MUSIC_PROJECT_NAME = "Music Orchestra";
+
+  /** Map sunoIssue status → canonical issue status (ALL_ISSUE_STATUSES). */
+  function mapSunoToIssueStatus(s: SunoStatus): string {
+    switch (s) {
+      case "DRAFT":      return "backlog";
+      case "GENERATING": return "in_progress";
+      case "REVIEW":     return "in_review";
+      case "APPROVED":   return "in_review";
+      case "PUBLISHED":  return "done";
+      case "FAILED":     return "cancelled";
+      default:           return "backlog";
+    }
+  }
+
+  /**
+   * Idempotently fetch (or create) the company's default Music goal +
+   * project. Returns { goalId, projectId } both guaranteed non-null.
+   */
+  async function ensureMusicProjectAndGoal(
+    companyId: string,
+  ): Promise<{ goalId: string; projectId: string }> {
+    // 1. Goal — a single canonical "Songs" goal per company.
+    //    goals uses `title` (not name) and has no metadata column.
+    const [existingGoal] = await db
+      .select({ id: goals.id })
+      .from(goals)
+      .where(and(eq(goals.companyId, companyId), eq(goals.title, MUSIC_GOAL_NAME)))
+      .limit(1);
+
+    let goalId = existingGoal?.id;
+    if (!goalId) {
+      const [newGoal] = await db
+        .insert(goals)
+        .values({
+          companyId,
+          title: MUSIC_GOAL_NAME,
+          status: "in_progress",
+          description: "Songs shipped by the autonomous music orchestra (Suno + MiniMax pipeline).",
+        })
+        .returning({ id: goals.id });
+      goalId = newGoal!.id;
+    }
+
+    // 2. Project — "Music Orchestra" under the Songs goal.
+    const [existingProject] = await db
+      .select({ id: projects.id, goalId: projects.goalId })
+      .from(projects)
+      .where(
+        and(eq(projects.companyId, companyId), eq(projects.name, MUSIC_PROJECT_NAME)),
+      )
+      .limit(1);
+
+    let projectId = existingProject?.id;
+    if (!projectId) {
+      const [newProject] = await db
+        .insert(projects)
+        .values({
+          companyId,
+          goalId,
+          name: MUSIC_PROJECT_NAME,
+          description:
+            "Songs flowing through the Suno pipeline. Each issue here is a song concept tracked end-to-end (DRAFT → PUBLISHED).",
+          status: "in_progress",
+        })
+        .returning({ id: projects.id });
+      projectId = newProject!.id;
+    } else if (!existingProject.goalId || existingProject.goalId !== goalId) {
+      // Backfill goalId on the project if missing or stale.
+      await db
+        .update(projects)
+        .set({ goalId })
+        .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)));
+    }
+
+    return { goalId, projectId };
+  }
+
+  /**
+   * Compose a short title + structured description for the parent issue
+   * from a sunoIssue. Title caps at 100 chars to fit the Issues board well.
+   */
+  function buildIssueShellFromSuno(
+    suno: typeof sunoIssues.$inferSelect,
+  ): { title: string; description: string } {
+    const titleSeed = suno.concept.split("\n")[0]?.trim() ?? suno.concept;
+    const title = titleSeed.length > 100 ? `${titleSeed.slice(0, 99)}…` : titleSeed;
+    const lines = [
+      `♪ ${suno.targetChakra} · ${suno.targetFrequency} Hz Solfeggio carrier`,
+      suno.genre ? `Genre: ${suno.genre}` : null,
+      "",
+      "Concept:",
+      suno.concept,
+    ].filter((l): l is string => l !== null);
+    return { title, description: lines.join("\n") };
+  }
+
+  /**
+   * Create a parent issue for a freshly-created sunoIssue and link it back
+   * via sunoIssues.issueId. Allocates an issueNumber atomically from the
+   * company. Best-effort: if the link fails, returns null and the suno_issue
+   * remains unlinked rather than blocking creation.
+   */
+  async function createLinkedIssueForSuno(
+    suno: typeof sunoIssues.$inferSelect,
+    actorIds: { agentId: string | null; userId: string | null },
+  ): Promise<string | null> {
+    try {
+      const { goalId, projectId } = await ensureMusicProjectAndGoal(suno.companyId);
+      const shell = buildIssueShellFromSuno(suno);
+
+      // Allocate an issueNumber atomically.
+      const [company] = await db
+        .update(companies)
+        .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+        .where(eq(companies.id, suno.companyId))
+        .returning({
+          issueCounter: companies.issueCounter,
+          issuePrefix: companies.issuePrefix,
+        });
+      if (!company) return null;
+
+      const issueNumber = company.issueCounter;
+      const identifier = `${company.issuePrefix}-${issueNumber}`;
+
+      const [issueRow] = await db
+        .insert(issues)
+        .values({
+          companyId: suno.companyId,
+          projectId,
+          goalId,
+          title: shell.title,
+          description: shell.description,
+          status: mapSunoToIssueStatus(suno.status as SunoStatus),
+          priority: "medium",
+          // Lyrics agent makes a reasonable default assignee — falls back
+          // to sound, then visual, then null. Michael is intentionally NOT
+          // the default since the song is doing the actual creative work.
+          assigneeAgentId:
+            suno.lyricsAgentId ?? suno.soundAgentId ?? suno.visualAgentId ?? null,
+          createdByAgentId: actorIds.agentId,
+          createdByUserId: actorIds.userId,
+          issueNumber,
+          identifier,
+        })
+        .returning({ id: issues.id });
+
+      const newIssueId = issueRow?.id ?? null;
+      if (!newIssueId) return null;
+
+      // Link the suno_issue back to the new issue.
+      await db
+        .update(sunoIssues)
+        .set({ issueId: newIssueId, updatedAt: new Date() })
+        .where(
+          and(eq(sunoIssues.id, suno.id), eq(sunoIssues.companyId, suno.companyId)),
+        );
+
+      return newIssueId;
+    } catch (err) {
+      // Don't break suno creation if the unified-hierarchy link fails.
+      // eslint-disable-next-line no-console
+      console.error("[suno-pipeline] Failed to create linked issue:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Mirror a sunoIssue status change to its linked issue (if any). Best-effort.
+   * Keeps the unified board accurate without blocking the suno transition.
+   */
+  async function syncLinkedIssueStatus(
+    suno: typeof sunoIssues.$inferSelect,
+    nextSunoStatus: SunoStatus,
+  ): Promise<void> {
+    if (!suno.issueId) return;
+    const nextIssueStatus = mapSunoToIssueStatus(nextSunoStatus);
+    try {
+      const setPatch: Record<string, unknown> = {
+        status: nextIssueStatus,
+        updatedAt: new Date(),
+      };
+      if (nextIssueStatus === "in_progress") setPatch.startedAt = new Date();
+      if (nextIssueStatus === "done") setPatch.completedAt = new Date();
+      if (nextIssueStatus === "cancelled") setPatch.cancelledAt = new Date();
+      await db
+        .update(issues)
+        .set(setPatch)
+        .where(and(eq(issues.id, suno.issueId), eq(issues.companyId, suno.companyId)));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[suno-pipeline] Failed to mirror status to linked issue:", err);
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   CRUD
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── GET /suno-pipeline/presets ────────────────────────────────────────────
+  // Returns mood presets for the one-click beat generation UI.
+  router.get("/suno-pipeline/presets", (_req, res) => {
+    // Import is at the top of the file already (MOOD_PRESETS)
+    res.json(MOOD_PRESETS);
+  });
+
+  // ── GET /suno-pipeline ────────────────────────────────────────────────────
+  router.get("/suno-pipeline", async (req, res) => {
+    try {
+      const companyId = resolveCompanyId(req);
+      assertCompanyAccess(req, companyId);
+
+      const rows = await db
+        .select()
+        .from(sunoIssues)
+        .where(eq(sunoIssues.companyId, companyId))
+        .orderBy(asc(sunoIssues.createdAt));
+
+      res.json(rows);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[suno-pipeline] GET failed:", err);
+      throw err;
+    }
+  });
+
+  // ── POST /suno-pipeline ───────────────────────────────────────────────────
+  router.post("/suno-pipeline", validate(createSchema), async (req, res) => {
+    const body = req.body as z.infer<typeof createSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const targetFrequency =
+      body.targetFrequency ?? SUNO_CHAKRA_FREQUENCIES[body.targetChakra];
+
+    const [row] = await db
+      .insert(sunoIssues)
+      .values({
+        companyId: body.companyId,
+        concept: body.concept,
+        targetChakra: body.targetChakra,
+        targetFrequency,
+        genre: body.genre ?? null,
+        lyricsAgentId: body.lyricsAgentId ?? null,
+        soundAgentId: body.soundAgentId ?? null,
+        visualAgentId: body.visualAgentId ?? null,
+        metadata: body.metadata ?? {},
+        status: "DRAFT",
+      })
+      .returning();
+
+    if (!row) throw badRequest("Failed to create suno issue");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.created",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        concept: row.concept,
+        targetChakra: row.targetChakra,
+        targetFrequency: row.targetFrequency,
+        status: row.status,
+      },
+    });
+
+    // Option C — auto-promote to the unified Goal/Project/Issue tree.
+    // Creates "Songs" goal + "Music Orchestra" project on first song,
+    // then a backlog issue linked back via sunoIssues.issueId. Failures
+    // here don't block creation (the suno_issue still exists).
+    const linkedIssueId = await createLinkedIssueForSuno(row, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    if (linkedIssueId) {
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.linked_to_issue",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: { issueId: linkedIssueId },
+      });
+    }
+
+    // Re-fetch so the response includes the freshly-set issueId.
+    const final = linkedIssueId
+      ? (await loadIssueOrThrow(row.id, body.companyId))
+      : row;
+    res.status(201).json(final);
+  });
+
+  // ── PATCH /suno-pipeline/:id ──────────────────────────────────────────────
+  router.patch("/suno-pipeline/:id", validate(updateSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof updateSchema>;
+    const companyId = resolveCompanyId(req);
+    assertCompanyAccess(req, companyId);
+
+    const existing = await loadIssueOrThrow(id, companyId);
+
+    // Build a delta of just the fields the caller actually sent.
+    const patch: Partial<typeof sunoIssues.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (body.concept !== undefined) patch.concept = body.concept;
+    if (body.targetChakra !== undefined) {
+      patch.targetChakra = body.targetChakra;
+      // If the chakra changes and the caller didn't pin a frequency, retune.
+      if (body.targetFrequency === undefined) {
+        patch.targetFrequency = SUNO_CHAKRA_FREQUENCIES[body.targetChakra];
+      }
+    }
+    if (body.targetFrequency !== undefined) patch.targetFrequency = body.targetFrequency;
+    if (body.genre !== undefined) patch.genre = body.genre;
+    if (body.lyricsAgentId !== undefined) patch.lyricsAgentId = body.lyricsAgentId;
+    if (body.soundAgentId !== undefined) patch.soundAgentId = body.soundAgentId;
+    if (body.visualAgentId !== undefined) patch.visualAgentId = body.visualAgentId;
+    if (body.sunoSongId !== undefined) patch.sunoSongId = body.sunoSongId;
+    if (body.audioUrl !== undefined) patch.audioUrl = body.audioUrl;
+    if (body.thumbnailUrl !== undefined) patch.thumbnailUrl = body.thumbnailUrl;
+    if (body.videoUrl !== undefined) patch.videoUrl = body.videoUrl;
+    if (body.minimaxSongId !== undefined) patch.minimaxSongId = body.minimaxSongId;
+    if (body.minimaxAudioUrl !== undefined) patch.minimaxAudioUrl = body.minimaxAudioUrl;
+    if (body.minimaxStatus !== undefined) patch.minimaxStatus = body.minimaxStatus;
+    if (body.canonAudioVariant !== undefined) patch.canonAudioVariant = body.canonAudioVariant;
+    if (body.status !== undefined) patch.status = body.status;
+    if (body.metadata !== undefined) patch.metadata = body.metadata;
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set(patch)
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    // Mirror status to linked issue if it changed.
+    if (body.status !== undefined && body.status !== existing.status) {
+      await syncLinkedIssueStatus(row, body.status);
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.updated",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        previousStatus: existing.status,
+        newStatus: row.status,
+        changedFields: Object.keys(body).filter((k) => k !== "companyId"),
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /suno-pipeline/backfill-issues ───────────────────────────────────
+  // One-time admin op (idempotent): find sunoIssues with no linked issue
+  // and create one for each. Used for songs created BEFORE option C landed,
+  // or to re-sync after a manual schema change.
+  router.post("/suno-pipeline/backfill-issues", async (req, res) => {
+    const companyId = resolveCompanyId(req);
+    assertCompanyAccess(req, companyId);
+
+    const unlinked = await db
+      .select()
+      .from(sunoIssues)
+      .where(and(eq(sunoIssues.companyId, companyId), sql`${sunoIssues.issueId} IS NULL`))
+      .orderBy(asc(sunoIssues.createdAt));
+
+    const actor = getActorInfo(req);
+    const results: Array<{ sunoIssueId: string; issueId: string | null }> = [];
+    for (const suno of unlinked) {
+      const issueId = await createLinkedIssueForSuno(suno, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      results.push({ sunoIssueId: suno.id, issueId });
+    }
+
+    const linkedCount = results.filter((r) => r.issueId).length;
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_pipeline.backfilled_issues",
+      entityType: "company",
+      entityId: companyId,
+      details: { totalUnlinked: unlinked.length, linkedCount },
+    });
+
+    res.json({ totalUnlinked: unlinked.length, linkedCount, results });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   STATE MACHINE (Phase 7)
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── POST /:id/assign ──────────────────────────────────────────────────────
+  // Michael sets the three creative agents. Pre-condition: status === DRAFT.
+  router.post("/suno-pipeline/:id/assign", validate(assignSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof assignSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (existing.status !== "DRAFT") {
+      throw unprocessable(
+        `Cannot assign agents on a ${existing.status} issue; only DRAFT issues accept assignments.`,
+      );
+    }
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({
+        lyricsAgentId: body.lyricsAgentId,
+        soundAgentId: body.soundAgentId,
+        visualAgentId: body.visualAgentId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.assigned",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        lyricsAgentId: body.lyricsAgentId,
+        soundAgentId: body.soundAgentId,
+        visualAgentId: body.visualAgentId,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/deposit ─────────────────────────────────────────────────────
+  // Any creative agent attaches a stage output (lyrics / soundPrompt /
+  // visualPrompt / releaseCopy / audioUrl / thumbnailUrl / videoUrl /
+  // sunoSongId / variants / note). Versioned trail in metadata.history[].
+  router.post("/suno-pipeline/:id/deposit", validate(depositSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof depositSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (existing.status === "PUBLISHED" || existing.status === "FAILED") {
+      throw unprocessable(
+        `Cannot deposit on a ${existing.status} issue (terminal state).`,
+      );
+    }
+
+    const actor = getActorInfo(req);
+    const agentName = await resolveActorAgentName(db, req);
+
+    // Snapshot top-level fields when the deposit aliases one (audioUrl,
+    // thumbnailUrl, videoUrl, sunoSongId). Other stages live only in metadata.
+    const topLevelPatch: Partial<typeof sunoIssues.$inferInsert> = { updatedAt: new Date() };
+    if (body.stage === "audioUrl" && typeof body.output === "string") {
+      topLevelPatch.audioUrl = body.output;
+    } else if (body.stage === "thumbnailUrl" && typeof body.output === "string") {
+      topLevelPatch.thumbnailUrl = body.output;
+    } else if (body.stage === "videoUrl" && typeof body.output === "string") {
+      topLevelPatch.videoUrl = body.output;
+    } else if (body.stage === "sunoSongId" && typeof body.output === "string") {
+      topLevelPatch.sunoSongId = body.output;
+    }
+
+    // Build the new metadata with appended history + a per-stage cache so
+    // readers don't have to walk history to find the current value.
+    const currentMeta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const stageCache = (currentMeta.stages && typeof currentMeta.stages === "object"
+      ? { ...(currentMeta.stages as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    stageCache[body.stage] = body.output;
+
+    const nextMeta = appendHistory(
+      { ...currentMeta, stages: stageCache },
+      {
+        stage: body.stage,
+        output: body.output,
+        at: new Date().toISOString(),
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        agentName,
+        status: existing.status as SunoStatus,
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ ...topLevelPatch, metadata: nextMeta })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.deposited",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        stage: body.stage,
+        agentName,
+        // Don't redact lyrics/prompts in the activity log details — those
+        // ARE the work product. logActivity's sanitizer handles secrets.
+        outputType: typeof body.output,
+        outputSize: typeof body.output === "string" ? body.output.length : undefined,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/dispatch ────────────────────────────────────────────────────
+  // Michael moves DRAFT → GENERATING. Validates all three creative agents
+  // are assigned.
+  router.post("/suno-pipeline/:id/dispatch", validate(transitionSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof transitionSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "GENERATING", ["DRAFT"]);
+
+    const missing: string[] = [];
+    if (!existing.lyricsAgentId) missing.push("lyricsAgentId");
+    if (!existing.soundAgentId) missing.push("soundAgentId");
+    if (!existing.visualAgentId) missing.push("visualAgentId");
+    if (missing.length > 0) {
+      throw unprocessable(
+        `Cannot dispatch: missing assignment(s) ${missing.join(", ")}. Call /assign first.`,
+      );
+    }
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "GENERATING", updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    // Mirror to linked issue (option C unified hierarchy).
+    await syncLinkedIssueStatus(row, "GENERATING");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.dispatched",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/request-review ──────────────────────────────────────────────
+  // Any creative agent moves GENERATING → REVIEW after depositing all required
+  // outputs. Per Phase 7 decisions: ALL THREE creative outputs required
+  // (lyrics + soundPrompt + visualPrompt) plus an audioUrl.
+  router.post(
+    "/suno-pipeline/:id/request-review",
+    validate(transitionSchema),
+    async (req, res) => {
+      const id = paramId(req);
+      const body = req.body as z.infer<typeof transitionSchema>;
+      assertCompanyAccess(req, body.companyId);
+
+      const existing = await loadIssueOrThrow(id, body.companyId);
+      assertTransition(existing.status as SunoStatus, "REVIEW", ["GENERATING"]);
+
+      const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+
+      const missing: string[] = [];
+      if (!stages.lyrics) missing.push("lyrics");
+      if (!stages.soundPrompt) missing.push("soundPrompt");
+      if (!stages.visualPrompt) missing.push("visualPrompt");
+      if (!existing.audioUrl) missing.push("audioUrl");
+      if (missing.length > 0) {
+        throw unprocessable(
+          `Cannot request review: missing ${missing.join(", ")}. Deposit them first.`,
+        );
+      }
+
+      const [row] = await db
+        .update(sunoIssues)
+        .set({ status: "REVIEW", updatedAt: new Date() })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!row) throw notFound("Suno issue not found");
+
+      await syncLinkedIssueStatus(row, "REVIEW");
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.review_requested",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+      });
+
+      res.json(row);
+    },
+  );
+
+  // ── POST /:id/approve ─────────────────────────────────────────────────────
+  // Raphael moves REVIEW → APPROVED. Locked to Raphael by agent name when
+  // the actor is an agent; board users (humans) bypass the role check —
+  // they're authorized via standard company-access permissions.
+  router.post("/suno-pipeline/:id/approve", validate(transitionSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof transitionSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const agentName = await resolveActorAgentName(db, req);
+    if (req.actor.type === "agent" && agentName !== "Raphael") {
+      throw forbidden(
+        `Only Raphael can approve Suno issues (calling agent: ${agentName ?? "unknown"})`,
+      );
+    }
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "APPROVED", ["REVIEW"]);
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "APPROVED", updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await syncLinkedIssueStatus(row, "APPROVED");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.approved",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/reject ──────────────────────────────────────────────────────
+  // Raphael moves REVIEW → GENERATING with feedback. Bumps metadata.iteration
+  // so we can show the rep counter in the UI.
+  router.post("/suno-pipeline/:id/reject", validate(rejectSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof rejectSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const agentName = await resolveActorAgentName(db, req);
+    if (req.actor.type === "agent" && agentName !== "Raphael") {
+      throw forbidden(
+        `Only Raphael can reject Suno issues (calling agent: ${agentName ?? "unknown"})`,
+      );
+    }
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "GENERATING", ["REVIEW"]);
+
+    const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const iteration = typeof meta.iteration === "number" ? meta.iteration + 1 : 1;
+    const actor = getActorInfo(req);
+    const nextMeta = appendHistory(
+      { ...meta, iteration, lastRejectFeedback: body.feedback },
+      {
+        stage: "reject",
+        output: body.feedback,
+        at: new Date().toISOString(),
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        agentName,
+        status: "GENERATING",
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "GENERATING", metadata: nextMeta, updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await syncLinkedIssueStatus(row, "GENERATING");
+
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.rejected",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        previousStatus: existing.status,
+        newStatus: row.status,
+        iteration,
+        feedback: body.feedback,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/publish ─────────────────────────────────────────────────────
+  // Sandalphon moves APPROVED → PUBLISHED. Locked to Sandalphon by agent name.
+  router.post("/suno-pipeline/:id/publish", validate(transitionSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof transitionSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const agentName = await resolveActorAgentName(db, req);
+    if (req.actor.type === "agent" && agentName !== "Sandalphon") {
+      throw forbidden(
+        `Only Sandalphon can publish Suno issues (calling agent: ${agentName ?? "unknown"})`,
+      );
+    }
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    assertTransition(existing.status as SunoStatus, "PUBLISHED", ["APPROVED"]);
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "PUBLISHED", updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await syncLinkedIssueStatus(row, "PUBLISHED");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.published",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/pick-canon ──────────────────────────────────────────────────
+  // Set canonAudioVariant — which variant (Suno A-side / MiniMax B-side) is
+  // the winner. Sandalphon will publish whichever audio URL this points at.
+  // Pass variant=null to clear the pick.
+  router.post("/suno-pipeline/:id/pick-canon", validate(pickCanonSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof pickCanonSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+
+    // Sanity: don't let user pick a variant whose audio URL doesn't exist.
+    if (body.variant === "suno" && !existing.audioUrl) {
+      throw unprocessable("Cannot pick suno: no audioUrl on this issue yet");
+    }
+    if (body.variant === "minimax" && !existing.minimaxAudioUrl) {
+      throw unprocessable("Cannot pick minimax: no minimaxAudioUrl on this issue yet");
+    }
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ canonAudioVariant: body.variant, updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.canon_picked",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousVariant: existing.canonAudioVariant, newVariant: body.variant },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/dispatch-minimax ────────────────────────────────────────────
+  // Standalone MiniMax dispatch — useful for re-rendering the B-side without
+  // re-running the entire creative chain. Reads soundPrompt/lyrics from
+  // metadata.stages by default; accept overrides in the body.
+  router.post(
+    "/suno-pipeline/:id/dispatch-minimax",
+    validate(dispatchMinimaxSchema),
+    async (req, res) => {
+      const id = paramId(req);
+      const body = req.body as z.infer<typeof dispatchMinimaxSchema>;
+      assertCompanyAccess(req, body.companyId);
+
+      const existing = await loadIssueOrThrow(id, body.companyId);
+      const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+
+      const prompt =
+        body.prompt ??
+        (typeof stages.soundPrompt === "string" ? (stages.soundPrompt as string) : "");
+      const lyrics =
+        body.lyrics ??
+        (typeof stages.lyrics === "string" ? (stages.lyrics as string) : "");
+
+      if (!prompt) {
+        throw unprocessable(
+          "dispatch-minimax requires a soundPrompt — generate Uriel stage first or pass prompt in the body",
+        );
+      }
+      if (!lyrics && !body.isInstrumental) {
+        throw unprocessable(
+          "dispatch-minimax requires lyrics (or set isInstrumental: true) — generate Zadkiel stage first or pass lyrics in the body",
+        );
+      }
+
+      let result: Awaited<ReturnType<typeof generateMinimaxMusic>>;
+      try {
+        result = await generateMinimaxMusic({
+          model: body.model ?? MINIMAX_MUSIC_MODELS.free,
+          prompt,
+          lyrics: lyrics || "",
+          outputUrl: true,
+          isInstrumental: true,
+          audioSetting: { sampleRate: 44100, bitrate: 256000, format: "mp3" },
+          context: { db, companyId: body.companyId, sunoIssueId: existing.id },
+        });
+      } catch (err) {
+        // Surface MiniMax-specific errors (insufficient balance, rate limit,
+        // sensitive content, invalid key) as 422 with the friendly hint
+        // message instead of a generic 500.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw unprocessable(msg);
+      }
+      if (!result.isUrl) {
+        throw unprocessable("MiniMax returned hex audio; expected URL");
+      }
+      const dispatchActor = getActorInfo(req);
+
+      // Persist MiniMax audio to paperclip storage so it survives past the
+      // 24h Aliyun OSS expiry. The permanent contentPath replaces the raw
+      // pre-signed URL in the DB.
+      const persisted = await persistMinimaxAudio({
+        db,
+        companyId: body.companyId,
+        audioUrl: result.audio,
+        traceId: result.traceId,
+        agentId: dispatchActor.agentId,
+        userId: dispatchActor.actorType === "user" ? dispatchActor.actorId : null,
+      });
+
+      const minimaxSongId = result.traceId
+        ? `minimax:${result.traceId}`
+        : `minimax:${Date.now()}`;
+      const nextMeta = appendHistory(
+        {
+          ...meta,
+          stages: {
+            ...stages,
+            minimaxAudioUrl: persisted.contentPath,
+            minimaxSongId,
+            minimaxAssetId: persisted.assetId,
+            minimaxOriginalUrl: result.audio,
+          },
+          lastMusicBackend: "minimax",
+          lastMusicModel: result.model,
+          minimaxTraceId: result.traceId,
+        },
+        {
+          stage: "minimaxAudioUrl",
+          output: persisted.contentPath,
+          at: new Date().toISOString(),
+          actorType: dispatchActor.actorType,
+          actorId: dispatchActor.actorId,
+          agentId: dispatchActor.agentId,
+          agentName: "Raziel/MiniMax (manual)",
+          status: existing.status as SunoStatus,
+        },
+      );
+
+      const [row] = await db
+        .update(sunoIssues)
+        .set({
+          minimaxAudioUrl: persisted.contentPath,
+          minimaxSongId,
+          minimaxStatus: result.baseStatusCode,
+          metadata: nextMeta,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!row) throw notFound("Suno issue not found");
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: dispatchActor.actorType,
+        actorId: dispatchActor.actorId,
+        agentId: dispatchActor.agentId,
+        runId: dispatchActor.runId,
+        action: "suno_issue.minimax_dispatched",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: {
+          model: result.model,
+          elapsedMs: result.elapsedMs,
+          traceId: result.traceId,
+          baseStatusCode: result.baseStatusCode,
+        },
+      });
+
+      res.json(row);
+    },
+  );
+
+  // ── POST /import-suno ────────────────────────────────────────────────────
+  // Import an out-of-band Suno generation (made directly on suno.com or via
+  // the CDP test harness) into paperclip. Creates a new sunoIssue, persists
+  // each variant's audio to paperclip's storage so the songs are owned (not
+  // dependent on cdn1.suno.ai staying available), and writes the metadata
+  // shape downstream agents expect so cover-art / release-copy / publish
+  // all work against the imported row.
+  router.post(
+    "/suno-pipeline/import-suno",
+    validate(importSunoSchema),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof importSunoSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const actor = getActorInfo(req);
+
+      // 1. Persist every variant. Done in parallel because each is an
+      //    independent CDN fetch + storage write. Returns a list of
+      //    { sunoSongId, audioUrl: <permanent contentPath>, title } that
+      //    becomes the canonical sunoVariants array on the issue.
+      const persistedVariants = await Promise.all(
+        body.variants.map(async (v) => {
+          const persisted = await persistAudioFromUrl({
+            db,
+            companyId: body.companyId,
+            audioUrl: v.sunoUrl,
+            identifier: v.sunoSongId,
+            filenamePrefix: "suno",
+            namespace: "music/suno",
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          return {
+            sunoSongId: v.sunoSongId,
+            audioUrl: persisted.contentPath,
+            originalSunoUrl: v.sunoUrl,
+            assetId: persisted.assetId,
+            title: v.title ?? "",
+            byteSize: persisted.byteSize,
+            sha256: persisted.sha256,
+          };
+        }),
+      );
+
+      const primary = persistedVariants[0];
+      if (!primary) {
+        // Schema enforces .min(1) but TS narrowing wants this guard.
+        throw unprocessable("import-suno requires at least one variant");
+      }
+
+      // 2. Build the metadata.stages payload that downstream agents read.
+      //    Mirrors the shape produced by dispatch-suno's success path so
+      //    /generate/visual-prompt and /generate/cover-art work without
+      //    branching on the issue's origin.
+      const initialMeta = appendHistory(
+        {
+          stages: {
+            soundPrompt: body.soundPrompt,
+            audioUrl: primary.audioUrl,
+            sunoSongId: primary.sunoSongId,
+            sunoVariants: persistedVariants.map((v) => ({
+              songId: v.sunoSongId,
+              audioUrl: v.audioUrl,
+              title: v.title,
+              originalSunoUrl: v.originalSunoUrl,
+              assetId: v.assetId,
+            })),
+          },
+          lastMusicBackend: "suno",
+          importedFromSuno: true,
+        },
+        {
+          stage: "audioUrl",
+          output: primary.audioUrl,
+          at: new Date().toISOString(),
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          agentName: "Raziel/Suno (imported)",
+          status: "REVIEW" as SunoStatus,
+        },
+      );
+
+      // 3. Insert the issue. Status starts at REVIEW because audio is already
+      //    finalized — no GENERATING phase to transition through. Frequency
+      //    derives from chakra when not explicitly passed.
+      const targetFrequency =
+        body.targetFrequency ?? SUNO_CHAKRA_FREQUENCIES[body.targetChakra];
+      const [issue] = await db
+        .insert(sunoIssues)
+        .values({
+          companyId: body.companyId,
+          concept: body.concept,
+          targetChakra: body.targetChakra,
+          targetFrequency,
+          genre: body.genre ?? null,
+          status: "REVIEW",
+          audioUrl: primary.audioUrl,
+          sunoSongId: primary.sunoSongId,
+          metadata: initialMeta,
+        })
+        .returning();
+      if (!issue) throw new Error("Failed to insert imported sunoIssue");
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.imported",
+        entityType: "suno_issue",
+        entityId: issue.id,
+        details: {
+          concept: body.concept,
+          targetChakra: body.targetChakra,
+          variantCount: persistedVariants.length,
+          totalBytes: persistedVariants.reduce((sum, v) => sum + v.byteSize, 0),
+          primarySongId: primary.sunoSongId,
+        },
+      });
+
+      res.status(201).json(issue);
+    },
+  );
+
+  // ── POST /:id/dispatch-suno ──────────────────────────────────────────────
+  // Standalone Suno dispatch via browser automation (Raziel). Reads
+  // soundPrompt/lyrics from metadata.stages by default; accepts overrides.
+  router.post(
+    "/suno-pipeline/:id/dispatch-suno",
+    validate(dispatchSunoSchema),
+    async (req, res) => {
+      const id = paramId(req);
+      const body = req.body as z.infer<typeof dispatchSunoSchema>;
+      assertCompanyAccess(req, body.companyId);
+
+      const existing = await loadIssueOrThrow(id, body.companyId);
+      const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+
+      const prompt =
+        body.prompt ??
+        (typeof stages.soundPrompt === "string" ? (stages.soundPrompt as string) : "");
+
+      if (!prompt) {
+        throw unprocessable(
+          "dispatch-suno requires a soundPrompt — generate Uriel stage first or pass prompt in the body",
+        );
+      }
+
+      const dispatchActor = getActorInfo(req);
+
+      let result: Awaited<ReturnType<typeof generateViaSuno>>;
+      try {
+        result = await generateViaSuno(prompt);
+      } catch (sunoErr) {
+        // Suno failed (CDP unreachable, click failed, generation timed out,
+        // CDN never became ready). Fall back to MiniMax music-2.6 with the
+        // same prompt — same behavior as auto-run.
+        await logActivity(db, {
+          companyId: body.companyId,
+          actorType: dispatchActor.actorType,
+          actorId: dispatchActor.actorId,
+          agentId: dispatchActor.agentId,
+          runId: dispatchActor.runId,
+          action: "suno_issue.suno_dispatch_failed",
+          entityType: "suno_issue",
+          entityId: existing.id,
+          details: {
+            backend: "suno",
+            error: sunoErr instanceof Error ? sunoErr.message : String(sunoErr),
+          },
+        });
+
+        const chakraKey = (existing.targetChakra ?? null) as ChakraKey | null;
+        const fbPrompt = buildMiniMaxPrompt(prompt, chakraKey, null);
+        try {
+          const fb = await generateMinimaxMusic({
+            model: MINIMAX_MUSIC_MODELS.free,
+            prompt: fbPrompt,
+            lyrics: typeof stages.lyrics === "string" ? (stages.lyrics as string) : "",
+            outputUrl: true,
+            isInstrumental: true,
+            audioSetting: { sampleRate: 44100, bitrate: 256000, format: "mp3" },
+            context: { db, companyId: body.companyId, sunoIssueId: existing.id },
+          });
+          if (!fb.isUrl) {
+            throw new Error("MiniMax fallback returned hex audio; expected URL");
+          }
+          const fbPersisted = await persistMinimaxAudio({
+            db,
+            companyId: body.companyId,
+            audioUrl: fb.audio,
+            traceId: fb.traceId,
+            agentId: dispatchActor.agentId,
+            userId: dispatchActor.actorType === "user" ? dispatchActor.actorId : null,
+          });
+          const fbSongId = fb.traceId
+            ? `minimax:${fb.traceId}`
+            : `minimax:${Date.now()}`;
+          const nextMetaFb = appendHistory(
+            {
+              ...meta,
+              stages: {
+                ...stages,
+                minimaxAudioUrl: fbPersisted.contentPath,
+                minimaxSongId: fbSongId,
+                minimaxAssetId: fbPersisted.assetId,
+                minimaxOriginalUrl: fb.audio,
+              },
+              lastMusicBackend: "minimax",
+              lastMusicModel: fb.model,
+              minimaxTraceId: fb.traceId,
+              sunoFallbackToMinimax: true,
+              sunoDispatchPending: false,
+            },
+            {
+              stage: "minimaxAudioUrl",
+              output: fbPersisted.contentPath,
+              at: new Date().toISOString(),
+              actorType: dispatchActor.actorType,
+              actorId: dispatchActor.actorId,
+              agentId: dispatchActor.agentId,
+              agentName: "Raziel/MiniMax (Suno fallback)",
+              status: existing.status as SunoStatus,
+            },
+          );
+          const [fbRow] = await db
+            .update(sunoIssues)
+            .set({
+              minimaxAudioUrl: fbPersisted.contentPath,
+              minimaxSongId: fbSongId,
+              minimaxStatus: fb.baseStatusCode,
+              metadata: nextMetaFb,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (!fbRow) throw notFound("Suno issue not found");
+
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: dispatchActor.actorType,
+            actorId: dispatchActor.actorId,
+            agentId: dispatchActor.agentId,
+            runId: dispatchActor.runId,
+            action: "suno_issue.suno_fallback_minimax_generated",
+            entityType: "suno_issue",
+            entityId: fbRow.id,
+            details: {
+              backend: "minimax",
+              fallbackFor: "suno",
+              model: fb.model,
+              elapsedMs: fb.elapsedMs,
+              traceId: fb.traceId,
+            },
+          });
+
+          res.json(fbRow);
+          return;
+        } catch (fbErr) {
+          // Both backends failed — escalate to orchestrator BEFORE throwing
+          // so the issue moves to FAILED, the activity log carries an
+          // explicit ping, and live-event subscribers (orchestrator agents,
+          // dashboard) react in real time.
+          const msg = sunoErr instanceof Error ? sunoErr.message : String(sunoErr);
+          const fbMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+
+          const metaEsc = (existing.metadata ?? {}) as Record<string, unknown>;
+          const stagesEsc = (metaEsc.stages && typeof metaEsc.stages === "object"
+            ? (metaEsc.stages as Record<string, unknown>)
+            : {}) as Record<string, unknown>;
+          const escalationMeta = appendHistory(
+            {
+              ...metaEsc,
+              stages: stagesEsc,
+              escalation: {
+                at: new Date().toISOString(),
+                source: "dispatch-suno",
+                reason: "Suno + MiniMax both failed",
+                sunoError: msg,
+                minimaxError: fbMsg,
+                soundPrompt: prompt.slice(0, 500),
+              },
+              lastFailureReason: `Suno failed (${msg}); MiniMax fallback failed (${fbMsg})`,
+            },
+            {
+              stage: "fail",
+              output: `escalated: Suno+MiniMax both failed`,
+              at: new Date().toISOString(),
+              actorType: dispatchActor.actorType,
+              actorId: dispatchActor.actorId,
+              agentId: dispatchActor.agentId,
+              agentName: "Raziel (escalation)",
+              status: "FAILED" as SunoStatus,
+            },
+          );
+          const [escRow] = await db
+            .update(sunoIssues)
+            .set({
+              status: "FAILED",
+              metadata: escalationMeta,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (escRow) {
+            await syncLinkedIssueStatus(escRow, "FAILED");
+          }
+
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: dispatchActor.actorType,
+            actorId: dispatchActor.actorId,
+            agentId: dispatchActor.agentId,
+            runId: dispatchActor.runId,
+            action: "suno_issue.escalated_to_orchestrator",
+            entityType: "suno_issue",
+            entityId: existing.id,
+            details: {
+              source: "dispatch-suno",
+              reason: "Suno + MiniMax both failed",
+              sunoError: msg,
+              minimaxError: fbMsg,
+              needsOrchestratorAttention: true,
+            },
+          });
+
+          publishLiveEvent({
+            companyId: body.companyId,
+            type: "activity.logged",
+            payload: {
+              kind: "music_pipeline_escalation",
+              source: "dispatch-suno",
+              issueId: existing.id,
+              reason: "Suno + MiniMax both failed",
+              sunoError: msg,
+              minimaxError: fbMsg,
+              needsOrchestratorAttention: true,
+            },
+          });
+
+          throw unprocessable(`Suno failed: ${msg}. MiniMax fallback also failed: ${fbMsg}. Escalated to orchestrator.`);
+        }
+      }
+
+      const sunoSongId = result.songId;
+      const nextMeta = appendHistory(
+        {
+          ...meta,
+          stages: {
+            ...stages,
+            audioUrl: result.audioUrl,
+            sunoSongId,
+            sunoVariants: result.variants,
+          },
+          lastMusicBackend: "suno",
+          sunoDispatchPending: false,
+        },
+        {
+          stage: "audioUrl",
+          output: result.audioUrl,
+          at: new Date().toISOString(),
+          actorType: dispatchActor.actorType,
+          actorId: dispatchActor.actorId,
+          agentId: dispatchActor.agentId,
+          agentName: "Raziel/Suno (browser)",
+          status: existing.status as SunoStatus,
+        },
+      );
+
+      const [row] = await db
+        .update(sunoIssues)
+        .set({
+          audioUrl: result.audioUrl,
+          sunoSongId,
+          metadata: nextMeta,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!row) throw notFound("Suno issue not found");
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: dispatchActor.actorType,
+        actorId: dispatchActor.actorId,
+        agentId: dispatchActor.agentId,
+        runId: dispatchActor.runId,
+        action: "suno_issue.suno_dispatched",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: {
+          songId: result.songId,
+          audioUrl: result.audioUrl,
+          duration: result.duration,
+          title: result.title,
+          variantCount: result.variants.length,
+        },
+      });
+
+      res.json(row);
+    },
+  );
+
+  // ── POST /:id/fail ────────────────────────────────────────────────────────
+  // Any agent can move any non-terminal status to FAILED with a reason.
+  router.post("/suno-pipeline/:id/fail", validate(failSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof failSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (existing.status === "PUBLISHED" || existing.status === "FAILED") {
+      throw unprocessable(
+        `Issue is already in terminal state ${existing.status}.`,
+      );
+    }
+
+    const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const actor = getActorInfo(req);
+    const agentName = await resolveActorAgentName(db, req);
+    const nextMeta = appendHistory(
+      { ...meta, lastFailureReason: body.reason },
+      {
+        stage: "fail",
+        output: body.reason,
+        at: new Date().toISOString(),
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        agentName,
+        status: "FAILED",
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ status: "FAILED", metadata: nextMeta, updatedAt: new Date() })
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await syncLinkedIssueStatus(row, "FAILED");
+
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.failed",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        previousStatus: existing.status,
+        newStatus: row.status,
+        reason: body.reason,
+      },
+    });
+
+    res.json(row);
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   GENERATION HOOKS (Phase 8 — OpenRouter free-tier)
+  // ────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Persist a stage output onto an issue in the same shape /deposit uses,
+   * so the LLM-generated content joins the same history trail. Returns the
+   * updated row.
+   */
+  async function persistGeneratedStage(args: {
+    issue: typeof sunoIssues.$inferSelect;
+    companyId: string;
+    stage: string;
+    output: string | Record<string, unknown>;
+    agentName: string | null;
+    actor: ReturnType<typeof getActorInfo>;
+    model: string;
+  }) {
+    const meta = (args.issue.metadata ?? {}) as Record<string, unknown>;
+    const stageCache = (meta.stages && typeof meta.stages === "object"
+      ? { ...(meta.stages as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    stageCache[args.stage] = args.output;
+
+    const nextMeta = appendHistory(
+      { ...meta, stages: stageCache, lastGenModel: args.model },
+      {
+        stage: args.stage,
+        output: args.output,
+        at: new Date().toISOString(),
+        actorType: args.actor.actorType,
+        actorId: args.actor.actorId,
+        agentId: args.actor.agentId,
+        agentName: args.agentName,
+        status: args.issue.status as SunoStatus,
+      },
+    );
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ metadata: nextMeta, updatedAt: new Date() })
+      .where(
+        and(eq(sunoIssues.id, args.issue.id), eq(sunoIssues.companyId, args.companyId)),
+      )
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    await logActivity(db, {
+      companyId: args.companyId,
+      actorType: args.actor.actorType,
+      actorId: args.actor.actorId,
+      agentId: args.actor.agentId,
+      runId: args.actor.runId,
+      action: `suno_issue.generated.${args.stage}`,
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: {
+        stage: args.stage,
+        agentName: args.agentName,
+        model: args.model,
+        outputSize:
+          typeof args.output === "string" ? args.output.length : JSON.stringify(args.output).length,
+      },
+    });
+
+    return row;
+  }
+
+  /** Build the LLM context object from an issue + caller hints. */
+  function ctxFromIssue(
+    issue: typeof sunoIssues.$inferSelect,
+    hints?: Record<string, unknown>,
+  ): SunoLlmContext {
+    const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+    const stages = (meta.stages && typeof meta.stages === "object"
+      ? (meta.stages as Record<string, unknown>)
+      : {}) as Record<string, unknown>;
+    return {
+      concept: issue.concept,
+      targetChakra: issue.targetChakra,
+      targetFrequency: issue.targetFrequency,
+      genre: issue.genre,
+      lyrics: typeof stages.lyrics === "string" ? (stages.lyrics as string) : undefined,
+      soundPrompt:
+        typeof stages.soundPrompt === "string"
+          ? (stages.soundPrompt as string)
+          : undefined,
+      hints,
+    };
+  }
+
+  /**
+   * Look up an archangel by name within a company and return its overridable
+   * generation config. Returns null fields when the agent doesn't exist or
+   * doesn't have overrides set — runGenerate falls back to its defaults.
+   *
+   * Convention: each archangel can override two keys in `agents.runtimeConfig`:
+   *   - `model`         — string, overrides SUNO_MODELS[stage] and body.model
+   *   - `systemPrompt`  — string, replaces the default builder's system message
+   *
+   * Edit these via the Paperclip Agents page (or via SQL) without touching code.
+   */
+  async function loadArchangelConfig(
+    companyId: string,
+    archangelName: string,
+  ): Promise<{ model: string | null; systemPrompt: string | null }> {
+    const [agent] = await db
+      .select({
+        runtimeConfig: agentsTable.runtimeConfig,
+      })
+      .from(agentsTable)
+      .where(
+        and(eq(agentsTable.companyId, companyId), eq(agentsTable.name, archangelName)),
+      )
+      .limit(1);
+    const cfg = (agent?.runtimeConfig ?? {}) as Record<string, unknown>;
+    return {
+      model: typeof cfg.model === "string" ? (cfg.model as string) : null,
+      systemPrompt:
+        typeof cfg.systemPrompt === "string" ? (cfg.systemPrompt as string) : null,
+    };
+  }
+
+  /**
+   * Common runner for the four /generate/* routes. Loads the issue, asserts
+   * status is non-terminal, looks up the archangel's runtimeConfig overrides,
+   * calls OpenRouter, and persists the result onto the same metadata.stages
+   * cache + history trail used by /deposit.
+   *
+   * Resolution order for `model`:    agent.runtimeConfig.model > body.model > args.defaultModel
+   * Resolution order for `system`:   agent.runtimeConfig.systemPrompt > args.build(ctx)[0]
+   */
+  async function runGenerate(
+    req: Request,
+    res: { json: (body: unknown) => void; status: (n: number) => unknown },
+    args: {
+      stage: "lyrics" | "soundPrompt" | "visualPrompt" | "releaseCopy";
+      /** Archangel responsible for this stage (looked up by name in the company). */
+      archangelName: "Zadkiel" | "Uriel" | "Jophiel" | "Gabriel";
+      defaultModel: string;
+      build: (ctx: SunoLlmContext) => Parameters<typeof callOpenRouter>[0]["messages"];
+      maxTokens?: number;
+      /** When true, parse the LLM output as JSON and store the parsed object. */
+      parseJson?: boolean;
+    },
+  ) {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof generateSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const issue = await loadIssueOrThrow(id, body.companyId);
+    if (issue.status === "PUBLISHED" || issue.status === "FAILED") {
+      throw unprocessable(
+        `Cannot generate ${args.stage} on a ${issue.status} issue (terminal state).`,
+      );
+    }
+
+    // Per-archangel overrides from agents.runtimeConfig — lets the user swap
+    // models + prompts without touching code. See loadArchangelConfig().
+    const overrides = await loadArchangelConfig(body.companyId, args.archangelName);
+    const model = overrides.model ?? body.model ?? args.defaultModel;
+
+    const ctx = ctxFromIssue(issue, body.hints);
+    const messages = args.build(ctx);
+    if (overrides.systemPrompt && messages[0]?.role === "system") {
+      messages[0] = { role: "system", content: overrides.systemPrompt };
+    }
+
+    let raw: string;
+    try {
+      raw = await callOpenRouter({
+        model,
+        messages,
+        maxTokens: args.maxTokens,
+        context: {
+          db,
+          companyId: body.companyId,
+          stage: args.stage,
+          sunoIssueId: issue.id,
+        },
+      });
+    } catch (err) {
+      throw badRequest(
+        `Generation failed for ${args.stage}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    let output: string | Record<string, unknown> = raw;
+    if (args.parseJson) {
+      try {
+        // Tolerate fenced code blocks like ```json ... ```
+        const cleaned = raw
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/```\s*$/i, "")
+          .trim();
+        output = JSON.parse(cleaned);
+      } catch (err) {
+        // Not fatal — fall back to storing the raw string. Caller can re-run.
+        output = { raw, parseError: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    const actor = getActorInfo(req);
+    const callingAgentName = await resolveActorAgentName(db, req);
+    const row = await persistGeneratedStage({
+      issue,
+      companyId: body.companyId,
+      stage: args.stage,
+      output,
+      // The archangel responsible for the work (lookup by name) — distinct
+      // from the actor who triggered the call (could be a board user OR an
+      // agent acting on behalf of the archangel).
+      agentName: callingAgentName ?? args.archangelName,
+      actor,
+      model,
+    });
+
+    res.json(row);
+  }
+
+  // Zadkiel — lyrics
+  router.post(
+    "/suno-pipeline/:id/generate/lyrics",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "lyrics",
+        archangelName: "Zadkiel",
+        defaultModel: SUNO_MODELS.lyrics,
+        build: buildLyricsPrompt,
+        maxTokens: 1200,
+      }),
+  );
+
+  // Uriel — Suno description text
+  router.post(
+    "/suno-pipeline/:id/generate/sound-prompt",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "soundPrompt",
+        archangelName: "Uriel",
+        defaultModel: SUNO_MODELS.soundPrompt,
+        build: buildSoundPromptPrompt,
+        maxTokens: 600,
+      }),
+  );
+
+  // Jophiel — image-gen prompt for cover art
+  router.post(
+    "/suno-pipeline/:id/generate/visual-prompt",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "visualPrompt",
+        archangelName: "Jophiel",
+        defaultModel: SUNO_MODELS.visualPrompt,
+        build: buildVisualPromptPrompt,
+        maxTokens: 500,
+      }),
+  );
+
+  // Gabriel — release copy + social caption (returns JSON)
+  router.post(
+    "/suno-pipeline/:id/generate/release-copy",
+    validate(generateSchema),
+    async (req, res) =>
+      runGenerate(req, res, {
+        stage: "releaseCopy",
+        archangelName: "Gabriel",
+        defaultModel: SUNO_MODELS.releaseCopy,
+        build: buildReleaseCopyPrompt,
+        maxTokens: 800,
+        parseJson: true,
+      }),
+  );
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   MUSIC GENERATION (Phase 10 — MiniMax music-2.6-free as Suno alt)
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── POST /:id/generate/song-via-minimax ───────────────────────────────────
+  // Server-to-server alternative to Suno. No browser session required.
+  // Uses metadata.stages.lyrics + metadata.stages.soundPrompt as input,
+  // calls MiniMax /v1/music_generation, and deposits the resulting audio_url.
+  router.post(
+    "/suno-pipeline/:id/generate/song-via-minimax",
+    validate(minimaxMusicSchema),
+    async (req, res) => {
+      const id = paramId(req);
+      const body = req.body as z.infer<typeof minimaxMusicSchema>;
+      assertCompanyAccess(req, body.companyId);
+
+      const issue = await loadIssueOrThrow(id, body.companyId);
+      if (issue.status === "PUBLISHED" || issue.status === "FAILED") {
+        throw unprocessable(
+          `Cannot generate music on a ${issue.status} issue (terminal state).`,
+        );
+      }
+
+      // Pull lyrics + sound prompt from metadata.stages, with caller overrides.
+      const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+
+      const prompt =
+        body.prompt ??
+        (typeof stages.soundPrompt === "string" ? (stages.soundPrompt as string) : null);
+      const lyrics =
+        body.lyrics ??
+        (typeof stages.lyrics === "string" ? (stages.lyrics as string) : null);
+
+      if (!prompt) {
+        throw unprocessable(
+          "MiniMax music gen requires a soundPrompt — deposit one first via /generate/sound-prompt or /deposit.",
+        );
+      }
+      if (!lyrics && !body.isInstrumental) {
+        throw unprocessable(
+          "MiniMax music gen requires lyrics (or set isInstrumental: true) — deposit them first via /generate/lyrics or /deposit.",
+        );
+      }
+
+      let result;
+      try {
+        result = await generateMinimaxMusic({
+          model: (body.model as MinimaxMusicModel | undefined) ?? MINIMAX_MUSIC_MODELS.free,
+          prompt,
+          lyrics: lyrics || "",
+          outputUrl: true,
+          isInstrumental: true,
+          audioSetting: { sampleRate: 44100, bitrate: 256000, format: "mp3" },
+          context: { db, companyId: body.companyId, sunoIssueId: issue.id },
+        });
+      } catch (err) {
+        throw badRequest(
+          `MiniMax music generation failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      if (!result.isUrl) {
+        throw badRequest("MiniMax returned hex audio; expected URL");
+      }
+
+      const musicActor = getActorInfo(req);
+      const persisted = await persistMinimaxAudio({
+        db,
+        companyId: body.companyId,
+        audioUrl: result.audio,
+        traceId: (result.extra?.["trace_id"] as string | null) ?? result.traceId,
+        agentId: musicActor.agentId,
+        userId: musicActor.actorType === "user" ? musicActor.actorId : null,
+      });
+
+      // Deposit audioUrl + tag the song id so we can tell which path produced it.
+      const sunoSongId = `minimax:${(result.extra?.["trace_id"] as string) ?? Date.now()}`;
+      const stageCache = {
+        ...stages,
+        audioUrl: persisted.contentPath,
+        sunoSongId,
+        minimaxAssetId: persisted.assetId,
+        minimaxOriginalUrl: result.audio,
+      };
+      const nextMeta = appendHistory(
+        { ...meta, stages: stageCache, lastMusicBackend: "minimax", lastMusicModel: result.model },
+        {
+          stage: "audioUrl",
+          output: persisted.contentPath,
+          at: new Date().toISOString(),
+          actorType: musicActor.actorType,
+          actorId: musicActor.actorId,
+          agentId: musicActor.agentId,
+          agentName: "Raziel/MiniMax",
+          status: issue.status as SunoStatus,
+        },
+      );
+
+      const [row] = await db
+        .update(sunoIssues)
+        .set({
+          audioUrl: persisted.contentPath,
+          sunoSongId,
+          metadata: nextMeta,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!row) throw notFound("Suno issue not found");
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.music_generated.minimax",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: {
+          model: result.model,
+          elapsedMs: result.elapsedMs,
+          audioUrlPresent: true,
+        },
+      });
+
+      res.json(row);
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   COVER ART GENERATION (Phase 8.5 — Jophiel renders the visualPrompt)
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── POST /:id/generate/cover-art ──────────────────────────────────────────
+  // Jophiel renders an actual cover image from the visualPrompt that
+  // /generate/visual-prompt produced. Replaces Suno's auto-generated
+  // thumbnailUrl with a custom branded one. Original Suno cover is
+  // preserved in metadata.previousThumbnails[].
+  router.post(
+    "/suno-pipeline/:id/generate/cover-art",
+    validate(coverArtSchema),
+    async (req, res) => {
+      const id = paramId(req);
+      const body = req.body as z.infer<typeof coverArtSchema>;
+      assertCompanyAccess(req, body.companyId);
+
+      const issue = await loadIssueOrThrow(id, body.companyId);
+      if (issue.status === "PUBLISHED" || issue.status === "FAILED") {
+        throw unprocessable(
+          `Cannot generate cover art on a ${issue.status} issue (terminal state).`,
+        );
+      }
+
+      // Pull the visualPrompt from metadata.stages — set by /generate/visual-prompt
+      const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+      const prompt =
+        body.prompt ??
+        (typeof stages.visualPrompt === "string"
+          ? (stages.visualPrompt as string)
+          : null);
+
+      if (!prompt) {
+        throw unprocessable(
+          "Cover art generation requires a visualPrompt — call /generate/visual-prompt first or pass `prompt` in body.",
+        );
+      }
+
+      // Per-archangel override: Jophiel's runtimeConfig.imageModel takes priority
+      const overrides = await loadArchangelConfig(body.companyId, "Jophiel");
+      const cfgModel =
+        typeof (overrides as { imageModel?: unknown }).imageModel === "string"
+          ? ((overrides as { imageModel?: string }).imageModel ?? null)
+          : null;
+      const model = body.model ?? cfgModel ?? undefined;
+
+      let result;
+      try {
+        result = await generateCoverArt({
+          prompt,
+          model,
+          aspectRatio: body.aspectRatio ?? "1:1",
+          imageSize: body.imageSize ?? "1K",
+        });
+      } catch (err) {
+        throw badRequest(
+          `Cover art generation failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Build the new metadata: cache new thumbnail, preserve old in history.
+      const previousThumbnail =
+        typeof issue.thumbnailUrl === "string" ? issue.thumbnailUrl : null;
+      const stageCache = { ...stages, thumbnailUrl: result.dataUrl };
+      const previousList = Array.isArray(meta.previousThumbnails)
+        ? (meta.previousThumbnails as unknown[])
+        : [];
+      const actor = getActorInfo(req);
+      const nextMeta = appendHistory(
+        {
+          ...meta,
+          stages: stageCache,
+          lastCoverArtModel: result.model,
+          lastCoverArtMime: result.mimeType,
+          previousThumbnails: previousThumbnail
+            ? [...previousList, previousThumbnail]
+            : previousList,
+        },
+        {
+          // Don't dump the full base64 data URL into history — it's large.
+          // We store size + mime here; the actual image lives in stages.thumbnailUrl
+          // and top-level thumbnailUrl below.
+          stage: "thumbnailUrl",
+          output: {
+            mimeType: result.mimeType,
+            dataUrlBytes: result.dataUrl.length,
+            caption: result.textCaption,
+            elapsedMs: result.elapsedMs,
+          },
+          at: new Date().toISOString(),
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          agentName: "Jophiel",
+          status: issue.status as SunoStatus,
+        },
+      );
+
+      const [row] = await db
+        .update(sunoIssues)
+        .set({
+          thumbnailUrl: result.dataUrl,
+          metadata: nextMeta,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!row) throw notFound("Suno issue not found");
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.cover_art_generated",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: {
+          model: result.model,
+          mimeType: result.mimeType,
+          aspectRatio: body.aspectRatio ?? "1:1",
+          imageSize: body.imageSize ?? "1K",
+          dataUrlBytes: result.dataUrl.length,
+          elapsedMs: result.elapsedMs,
+          replacedPreviousThumbnail: !!previousThumbnail,
+        },
+      });
+
+      res.json(row);
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────
+  //   AUTONOMOUS ORCHESTRATION (Phase 9-A)
+  // ────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Find an archangel agent in a company by exact name match. Used by
+   * autoRun to auto-assign Zadkiel/Uriel/Jophiel without human intervention.
+   */
+  async function findArchangelByName(companyId: string, name: string) {
+    const [row] = await db
+      .select({ id: agentsTable.id, name: agentsTable.name })
+      .from(agentsTable)
+      .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.name, name)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Internal orchestration: synthesize a generate call without going through
+   * the HTTP layer. Persists via the same persistGeneratedStage path. Returns
+   * the updated issue row.
+   */
+  async function executeGenerateInternal(args: {
+    issue: typeof sunoIssues.$inferSelect;
+    companyId: string;
+    stage: "lyrics" | "soundPrompt" | "visualPrompt" | "releaseCopy";
+    archangelName: "Zadkiel" | "Uriel" | "Jophiel" | "Gabriel";
+    defaultModel: string;
+    build: (ctx: SunoLlmContext) => Parameters<typeof callOpenRouter>[0]["messages"];
+    maxTokens?: number;
+    parseJson?: boolean;
+    hints?: Record<string, unknown>;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const overrides = await loadArchangelConfig(args.companyId, args.archangelName);
+    const model = overrides.model ?? args.defaultModel;
+
+    const ctx = ctxFromIssue(args.issue, args.hints);
+    const messages = args.build(ctx);
+    if (overrides.systemPrompt && messages[0]?.role === "system") {
+      messages[0] = { role: "system", content: overrides.systemPrompt };
+    }
+
+    const raw = await callOpenRouter({
+      model,
+      messages,
+      maxTokens: args.maxTokens,
+      context: {
+        db,
+        companyId: args.companyId,
+        stage: args.stage,
+        sunoIssueId: args.issue.id,
+      },
+    });
+    let output: string | Record<string, unknown> = raw;
+    if (args.parseJson) {
+      try {
+        const cleaned = raw
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/```\s*$/i, "")
+          .trim();
+        output = JSON.parse(cleaned);
+      } catch (err) {
+        output = { raw, parseError: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    return persistGeneratedStage({
+      issue: args.issue,
+      companyId: args.companyId,
+      stage: args.stage,
+      output,
+      agentName: args.archangelName,
+      actor: args.actor,
+      model,
+    });
+  }
+
+  // ── POST /:id/auto-run ────────────────────────────────────────────────────
+  // Synchronous end-to-end orchestrator. Runs the full creative chain in
+  // MELODY-FIRST order — Uriel designs the sonic palette before Zadkiel
+  // writes lyrics, so the lyrics fit the BPM/cadence/mood instead of forcing
+  // Uriel to retro-fit drums to whatever Zadkiel imagined.
+  //
+  //   1. Auto-assign Zadkiel/Uriel/Jophiel (if status=DRAFT)
+  //   2. Dispatch (DRAFT → GENERATING)
+  //   3. Generate sound prompt (Uriel)        ← melody first
+  //   4. Generate lyrics (Zadkiel)            ← lyrics fit Uriel's brief
+  //   5. Generate visual prompt (Jophiel)
+  //   6. Generate music via MiniMax (or skip if backend=skip)
+  //   7. Generate release copy (Gabriel)
+  //   8. Request review (GENERATING → REVIEW)
+  //
+  // Returns when the issue reaches REVIEW. Total time: ~30–60s depending
+  // on free-tier OpenRouter latency + MiniMax generation time.
+  router.post("/suno-pipeline/:id/auto-run", validate(autoRunSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof autoRunSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    let issue = await loadIssueOrThrow(id, body.companyId);
+    const actor = getActorInfo(req);
+
+    // Step 1: Auto-assign archangels by name (only if not already assigned)
+    if (!issue.lyricsAgentId || !issue.soundAgentId || !issue.visualAgentId) {
+      const [zadkiel, uriel, jophiel] = await Promise.all([
+        findArchangelByName(body.companyId, "Zadkiel"),
+        findArchangelByName(body.companyId, "Uriel"),
+        findArchangelByName(body.companyId, "Jophiel"),
+      ]);
+      if (!zadkiel || !uriel || !jophiel) {
+        throw unprocessable(
+          "auto-run requires Zadkiel, Uriel, and Jophiel agents seeded in this company. Run the archangel seed first.",
+        );
+      }
+      const [assigned] = await db
+        .update(sunoIssues)
+        .set({
+          lyricsAgentId: zadkiel.id,
+          soundAgentId: uriel.id,
+          visualAgentId: jophiel.id,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!assigned) throw notFound("Suno issue not found");
+      issue = assigned;
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.auto_run.assigned",
+        entityType: "suno_issue",
+        entityId: issue.id,
+        details: { archangels: ["Zadkiel", "Uriel", "Jophiel"] },
+      });
+    }
+
+    // Step 2: Dispatch to GENERATING (if still DRAFT)
+    if (issue.status === "DRAFT") {
+      const [dispatched] = await db
+        .update(sunoIssues)
+        .set({ status: "GENERATING", updatedAt: new Date() })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (!dispatched) throw notFound("Suno issue not found");
+      issue = dispatched;
+
+      await syncLinkedIssueStatus(issue, "GENERATING");
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.auto_run.dispatched",
+        entityType: "suno_issue",
+        entityId: issue.id,
+        details: { previousStatus: "DRAFT", newStatus: "GENERATING" },
+      });
+    } else if (issue.status !== "GENERATING") {
+      throw unprocessable(
+        `auto-run requires status DRAFT or GENERATING; current is ${issue.status}.`,
+      );
+    }
+
+    // Step 3-5: Creative chain — MELODY FIRST (Uriel → Zadkiel → Jophiel)
+    issue = await executeGenerateInternal({
+      issue,
+      companyId: body.companyId,
+      stage: "soundPrompt",
+      archangelName: "Uriel",
+      defaultModel: SUNO_MODELS.soundPrompt,
+      build: buildSoundPromptPrompt,
+      maxTokens: 600,
+      hints: body.hints,
+      actor,
+    });
+    issue = await executeGenerateInternal({
+      issue,
+      companyId: body.companyId,
+      stage: "lyrics",
+      archangelName: "Zadkiel",
+      defaultModel: SUNO_MODELS.lyrics,
+      build: buildLyricsPrompt,
+      maxTokens: 1200,
+      hints: body.hints,
+      actor,
+    });
+    issue = await executeGenerateInternal({
+      issue,
+      companyId: body.companyId,
+      stage: "visualPrompt",
+      archangelName: "Jophiel",
+      defaultModel: SUNO_MODELS.visualPrompt,
+      build: buildVisualPromptPrompt,
+      maxTokens: 500,
+      hints: body.hints,
+      actor,
+    });
+
+    // Step 6: Music generation — option A parallel A/B.
+    //
+    // MiniMax is server-side & deterministic — fires immediately and writes
+    // to the dedicated minimaxAudioUrl/minimaxSongId/minimaxStatus columns.
+    // Suno is browser-side via Raziel CDP automation — populates audioUrl
+    // / sunoSongId when the browser pipeline completes.
+    //
+    // Net effect: when both pipelines complete, the kanban card shows two
+    // audio players side-by-side and Raphael picks canonAudioVariant.
+    if (body.musicBackend !== "skip") {
+      const meta = (issue.metadata ?? {}) as Record<string, unknown>;
+      const stages = (meta.stages && typeof meta.stages === "object"
+        ? (meta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+      const rawSoundPrompt = typeof stages.soundPrompt === "string" ? (stages.soundPrompt as string) : "";
+      const lyrics = typeof stages.lyrics === "string" ? (stages.lyrics as string) : "";
+
+      if (!rawSoundPrompt) {
+        throw new Error("auto-run music: no soundPrompt in stages — run Uriel first");
+      }
+
+      // ── MiniMax B-side (runs when backend is "minimax" or "parallel") ──
+      if (body.musicBackend === "minimax" || body.musicBackend === "parallel") {
+        const chakraKey = (issue.targetChakra ?? null) as ChakraKey | null;
+        const prompt = buildMiniMaxPrompt(rawSoundPrompt, chakraKey, body.hints as { bpm?: number; identity?: string } | null);
+
+        try {
+          const result = await generateMinimaxMusic({
+            model: MINIMAX_MUSIC_MODELS.free,
+            prompt,
+            lyrics: lyrics || "",
+            outputUrl: true,
+            isInstrumental: true,
+            audioSetting: { sampleRate: 44100, bitrate: 256000, format: "mp3" },
+            context: { db, companyId: body.companyId, sunoIssueId: issue.id },
+          });
+          if (!result.isUrl) {
+            throw new Error("MiniMax returned hex audio; expected URL");
+          }
+          const persisted = await persistMinimaxAudio({
+            db,
+            companyId: body.companyId,
+            audioUrl: result.audio,
+            traceId: result.traceId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          const minimaxSongId = result.traceId ? `minimax:${result.traceId}` : `minimax:${Date.now()}`;
+          const stageCache = {
+            ...stages,
+            minimaxAudioUrl: persisted.contentPath,
+            minimaxSongId,
+            minimaxAssetId: persisted.assetId,
+            minimaxOriginalUrl: result.audio,
+          };
+          const nextMeta = appendHistory(
+            {
+              ...meta,
+              stages: stageCache,
+              lastMusicBackend: "minimax",
+              lastMusicModel: result.model,
+              minimaxTraceId: result.traceId,
+            },
+            {
+              stage: "minimaxAudioUrl",
+              output: persisted.contentPath,
+              at: new Date().toISOString(),
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              agentName: "Raziel/MiniMax",
+              status: issue.status as SunoStatus,
+            },
+          );
+          const [updated] = await db
+            .update(sunoIssues)
+            .set({
+              minimaxAudioUrl: persisted.contentPath,
+              minimaxSongId,
+              minimaxStatus: result.baseStatusCode,
+              metadata: nextMeta,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (!updated) throw notFound("Suno issue not found");
+          issue = updated;
+
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.auto_run.minimax_generated",
+            entityType: "suno_issue",
+            entityId: issue.id,
+            details: {
+              backend: "minimax",
+              model: result.model,
+              elapsedMs: result.elapsedMs,
+              traceId: result.traceId,
+              baseStatusCode: result.baseStatusCode,
+            },
+          });
+        } catch (err) {
+          // MiniMax gen failed — continue to release copy + leave Suno path
+          // open. Issue stays in GENERATING so user can retry the music step.
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.auto_run.minimax_failed",
+            entityType: "suno_issue",
+            entityId: issue.id,
+            details: { backend: "minimax", error: err instanceof Error ? err.message : String(err) },
+          });
+        }
+      }
+
+      // ── Suno A-side via Raziel browser automation ──
+      // Runs when backend is "suno" or "parallel". Uses CDP to drive the
+      // Suno web UI and writes to audioUrl/sunoSongId columns.
+      if (body.musicBackend === "suno" || body.musicBackend === "parallel") {
+        try {
+          const sunoResult = await generateViaSuno(rawSoundPrompt);
+          const meta3 = (issue.metadata ?? {}) as Record<string, unknown>;
+          const stages3 = (meta3.stages && typeof meta3.stages === "object"
+            ? (meta3.stages as Record<string, unknown>)
+            : {}) as Record<string, unknown>;
+          const sunoSongId = sunoResult.songId;
+          const nextMeta3 = appendHistory(
+            {
+              ...meta3,
+              stages: {
+                ...stages3,
+                audioUrl: sunoResult.audioUrl,
+                sunoSongId,
+                // Store all variants so the UI can render both Suno variants.
+                sunoVariants: sunoResult.variants,
+              },
+              lastMusicBackend: body.musicBackend === "suno" ? "suno" : "parallel",
+              sunoDispatchPending: false,
+            },
+            {
+              stage: "audioUrl",
+              output: sunoResult.audioUrl,
+              at: new Date().toISOString(),
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              agentName: "Raziel/Suno (browser)",
+              status: issue.status as SunoStatus,
+            },
+          );
+          const [sunoUpdated] = await db
+            .update(sunoIssues)
+            .set({
+              audioUrl: sunoResult.audioUrl,
+              sunoSongId,
+              metadata: nextMeta3,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (!sunoUpdated) throw notFound("Suno issue not found");
+          issue = sunoUpdated;
+
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.auto_run.suno_generated",
+            entityType: "suno_issue",
+            entityId: issue.id,
+            details: {
+              backend: "suno",
+              songId: sunoResult.songId,
+              audioUrl: sunoResult.audioUrl,
+              duration: sunoResult.duration,
+              title: sunoResult.title,
+              variantCount: sunoResult.variants.length,
+            },
+          });
+        } catch (err) {
+          // Suno browser automation failed (CDP unreachable, click failed,
+          // generation timed out, CDN never became ready, etc.).
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.auto_run.suno_failed",
+            entityType: "suno_issue",
+            entityId: issue.id,
+            details: { backend: "suno", error: err instanceof Error ? err.message : String(err) },
+          });
+
+          // ── MiniMax fallback ──
+          // When backend is "suno" (not "parallel" — that already attempted
+          // MiniMax above), Suno failure cascades to MiniMax music-2.6 with
+          // the same prompt so the card always lands an audio. We skip the
+          // fallback if minimaxAudioUrl is already populated (e.g. from a
+          // prior partial run).
+          const fallbackEligible =
+            body.musicBackend === "suno" && !issue.minimaxAudioUrl;
+          if (fallbackEligible) {
+            const chakraKey = (issue.targetChakra ?? null) as ChakraKey | null;
+            const fbPrompt = buildMiniMaxPrompt(
+              rawSoundPrompt,
+              chakraKey,
+              body.hints as { bpm?: number; identity?: string } | null,
+            );
+            try {
+              const fb = await generateMinimaxMusic({
+                model: MINIMAX_MUSIC_MODELS.free,
+                prompt: fbPrompt,
+                lyrics: lyrics || "",
+                outputUrl: true,
+                isInstrumental: true,
+                audioSetting: { sampleRate: 44100, bitrate: 256000, format: "mp3" },
+                context: { db, companyId: body.companyId, sunoIssueId: issue.id },
+              });
+              if (!fb.isUrl) {
+                throw new Error("MiniMax fallback returned hex audio; expected URL");
+              }
+              const fbPersisted = await persistMinimaxAudio({
+                db,
+                companyId: body.companyId,
+                audioUrl: fb.audio,
+                traceId: fb.traceId,
+                agentId: actor.agentId,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              });
+              const fbSongId = fb.traceId
+                ? `minimax:${fb.traceId}`
+                : `minimax:${Date.now()}`;
+              const meta4 = (issue.metadata ?? {}) as Record<string, unknown>;
+              const stages4 = (meta4.stages && typeof meta4.stages === "object"
+                ? (meta4.stages as Record<string, unknown>)
+                : {}) as Record<string, unknown>;
+              const nextMeta4 = appendHistory(
+                {
+                  ...meta4,
+                  stages: {
+                    ...stages4,
+                    minimaxAudioUrl: fbPersisted.contentPath,
+                    minimaxSongId: fbSongId,
+                    minimaxAssetId: fbPersisted.assetId,
+                    minimaxOriginalUrl: fb.audio,
+                  },
+                  lastMusicBackend: "minimax",
+                  lastMusicModel: fb.model,
+                  minimaxTraceId: fb.traceId,
+                  // Mark this MiniMax result as a Suno fallback for downstream
+                  // consumers (UI badge, Raphael's variant picker).
+                  sunoFallbackToMinimax: true,
+                },
+                {
+                  stage: "minimaxAudioUrl",
+                  output: fbPersisted.contentPath,
+                  at: new Date().toISOString(),
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  agentName: "Raziel/MiniMax (Suno fallback)",
+                  status: issue.status as SunoStatus,
+                },
+              );
+              const [fbUpdated] = await db
+                .update(sunoIssues)
+                .set({
+                  minimaxAudioUrl: fbPersisted.contentPath,
+                  minimaxSongId: fbSongId,
+                  minimaxStatus: fb.baseStatusCode,
+                  metadata: nextMeta4,
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)),
+                )
+                .returning();
+              if (!fbUpdated) throw notFound("Suno issue not found");
+              issue = fbUpdated;
+
+              await logActivity(db, {
+                companyId: body.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "suno_issue.auto_run.suno_fallback_minimax_generated",
+                entityType: "suno_issue",
+                entityId: issue.id,
+                details: {
+                  backend: "minimax",
+                  fallbackFor: "suno",
+                  model: fb.model,
+                  elapsedMs: fb.elapsedMs,
+                  traceId: fb.traceId,
+                  baseStatusCode: fb.baseStatusCode,
+                },
+              });
+            } catch (fbErr) {
+              // Both Suno AND MiniMax fallback failed — escalate to the
+              // orchestrator: move issue to FAILED, write structured
+              // escalation metadata, log the orchestrator-ping activity,
+              // and broadcast a live event so any subscribed orchestrator
+              // (Claude session, dashboard, external listener) reacts.
+              const sunoErrMsg = err instanceof Error ? err.message : String(err);
+              const fbErrMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+
+              await logActivity(db, {
+                companyId: body.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "suno_issue.auto_run.suno_fallback_minimax_failed",
+                entityType: "suno_issue",
+                entityId: issue.id,
+                details: {
+                  backend: "minimax",
+                  fallbackFor: "suno",
+                  error: fbErrMsg,
+                },
+              });
+
+              const metaEsc = (issue.metadata ?? {}) as Record<string, unknown>;
+              const stagesEsc = (metaEsc.stages && typeof metaEsc.stages === "object"
+                ? (metaEsc.stages as Record<string, unknown>)
+                : {}) as Record<string, unknown>;
+              const escalationMeta = appendHistory(
+                {
+                  ...metaEsc,
+                  stages: stagesEsc,
+                  escalation: {
+                    at: new Date().toISOString(),
+                    source: "auto-run",
+                    reason: "Suno + MiniMax both failed",
+                    sunoError: sunoErrMsg,
+                    minimaxError: fbErrMsg,
+                    soundPrompt: rawSoundPrompt.slice(0, 500),
+                  },
+                  lastFailureReason: `Suno failed (${sunoErrMsg}); MiniMax fallback failed (${fbErrMsg})`,
+                },
+                {
+                  stage: "fail",
+                  output: `escalated: Suno+MiniMax both failed`,
+                  at: new Date().toISOString(),
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  agentName: "Raziel (escalation)",
+                  status: "FAILED" as SunoStatus,
+                },
+              );
+              const [escRow] = await db
+                .update(sunoIssues)
+                .set({
+                  status: "FAILED",
+                  metadata: escalationMeta,
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)),
+                )
+                .returning();
+              if (escRow) {
+                issue = escRow;
+                await syncLinkedIssueStatus(escRow, "FAILED");
+              }
+
+              await logActivity(db, {
+                companyId: body.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "suno_issue.escalated_to_orchestrator",
+                entityType: "suno_issue",
+                entityId: issue.id,
+                details: {
+                  source: "auto-run",
+                  reason: "Suno + MiniMax both failed",
+                  sunoError: sunoErrMsg,
+                  minimaxError: fbErrMsg,
+                  needsOrchestratorAttention: true,
+                },
+              });
+
+              publishLiveEvent({
+                companyId: body.companyId,
+                type: "activity.logged",
+                payload: {
+                  kind: "music_pipeline_escalation",
+                  source: "auto-run",
+                  issueId: issue.id,
+                  reason: "Suno + MiniMax both failed",
+                  sunoError: sunoErrMsg,
+                  minimaxError: fbErrMsg,
+                  needsOrchestratorAttention: true,
+                },
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Step 7: Release copy (Gabriel)
+    issue = await executeGenerateInternal({
+      issue,
+      companyId: body.companyId,
+      stage: "releaseCopy",
+      archangelName: "Gabriel",
+      defaultModel: SUNO_MODELS.releaseCopy,
+      build: buildReleaseCopyPrompt,
+      maxTokens: 800,
+      parseJson: true,
+      hints: body.hints,
+      actor,
+    });
+
+    // Step 8: Request review (only if all required stages present + audio)
+    const finalMeta = (issue.metadata ?? {}) as Record<string, unknown>;
+    const finalStages = (finalMeta.stages && typeof finalMeta.stages === "object"
+      ? (finalMeta.stages as Record<string, unknown>)
+      : {}) as Record<string, unknown>;
+    const canReview =
+      finalStages.lyrics &&
+      finalStages.soundPrompt &&
+      finalStages.visualPrompt &&
+      issue.audioUrl;
+
+    if (canReview) {
+      const [reviewed] = await db
+        .update(sunoIssues)
+        .set({ status: "REVIEW", updatedAt: new Date() })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+      if (reviewed) {
+        issue = reviewed;
+        await syncLinkedIssueStatus(issue, "REVIEW");
+        await logActivity(db, {
+          companyId: body.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "suno_issue.auto_run.review_requested",
+          entityType: "suno_issue",
+          entityId: issue.id,
+          details: { previousStatus: "GENERATING", newStatus: "REVIEW" },
+        });
+      }
+    }
+
+    res.json({
+      issue,
+      readyForReview: canReview,
+      missingStages: canReview
+        ? []
+        : [
+            !finalStages.lyrics ? "lyrics" : null,
+            !finalStages.soundPrompt ? "soundPrompt" : null,
+            !finalStages.visualPrompt ? "visualPrompt" : null,
+            !issue.audioUrl ? "audioUrl" : null,
+          ].filter(Boolean),
+    });
+  });
+
+  // ── GET /:id/timeline ─────────────────────────────────────────────────────
+  // Read activity-log rows scoped to this song, ascending by time. Useful
+  // for the song detail page and Metatron's records.
+  router.get("/suno-pipeline/:id/timeline", async (req, res) => {
+    const id = paramId(req);
+    const companyId = resolveCompanyId(req);
+    assertCompanyAccess(req, companyId);
+
+    // Confirm ownership before exposing activity rows.
+    await loadIssueOrThrow(id, companyId);
+
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "suno_issue"),
+          eq(activityLog.entityId, id),
+        ),
+      )
+      .orderBy(asc(activityLog.createdAt));
+
+    res.json(rows);
+  });
+
+  return router;
+}

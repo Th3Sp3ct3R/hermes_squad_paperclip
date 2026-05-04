@@ -10,7 +10,13 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentIcon } from "./AgentIconPicker";
+import { ArchangelAvatar } from "./ArchangelAvatar";
+import { SPHERE_COLOR_CLASS, type ArchangelName } from "./SacredGeometry";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+
+const ARCHANGEL_NAMES = new Set(Object.keys(SPHERE_COLOR_CLASS));
+const isArchangel = (name: string | undefined): name is ArchangelName =>
+  !!name && ARCHANGEL_NAMES.has(name);
 import {
   Collapsible,
   CollapsibleContent,
@@ -123,7 +129,16 @@ export function SidebarAgents() {
                     : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
                 )}
               >
-                <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
+                {isArchangel(agent.name) ? (
+                  <ArchangelAvatar
+                    name={agent.name}
+                    size="xs"
+                    working={runCount > 0}
+                    className="shrink-0"
+                  />
+                ) : (
+                  <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
+                )}
                 <span className="flex-1 truncate">{agent.name}</span>
                 {(agent.pauseReason === "budget" || runCount > 0) && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
