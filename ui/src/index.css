@@ -161,6 +161,18 @@
 .seclabel.p .lc, .section-header.p::before { background: var(--mace); box-shadow: 0 0 6px var(--mace-glow); }
 .seclabel.w .lc, .section-header.w::before { background: #fff; box-shadow: 0 0 6px rgba(255,255,255,.45); }
 
+/* Caduceus mark — inline SVG inside a seclabel inherits color via currentColor.
+   Each modifier paints the staff in its sphere's color and adds a soft glow
+   matching the legacy lightsaber chevron. */
+.seclabel svg { color: var(--muted-foreground); filter: drop-shadow(0 0 4px currentColor); }
+.seclabel.b svg { color: var(--luke); }
+.seclabel.r svg { color: var(--vader); }
+.seclabel.p svg { color: var(--mace); }
+.seclabel.w svg { color: #fff; }
+.seclabel.g svg { color: #d4af37; } /* gold — Tiphareth, the solar mark */
+.seclabel.s svg { color: #c0c0c0; } /* silver — Yesod, lunar/scribe */
+.seclabel.e svg { color: #10b981; } /* emerald — Netzach, fire/sound */
+
 /* ambient saber glows on body (dark mode only) */
 .dark body::before {
   content: "";

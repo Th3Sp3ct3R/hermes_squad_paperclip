@@ -21,6 +21,8 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { Bot, LayoutDashboard } from "lucide-react";
 import { ArchangelAvatar } from "@/components/ArchangelAvatar";
+import { CaduceusMark } from "@/components/CaduceusMark";
+import { HermeticPanelsRow } from "@/components/dashboard/HermeticPanels";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { WorkspacePulse } from "../components/dashboard/WorkspacePulse";
 import { AgentActivityBar } from "../components/dashboard/AgentActivityBar";
@@ -186,8 +188,8 @@ function AgentActivityFeed({ agents, runs }: { agents?: Agent[]; runs?: { agentI
 
   return (
     <div className="rounded-xl border border-border/30 bg-card/30 p-4">
-      <h3 className="section-header mb-3">
-        Agent Activity
+      <h3 className="seclabel e mb-3">
+        <CaduceusMark /> The Akashic Stream
       </h3>
       <div className="space-y-2">
         {activeRuns.map((item, i) => (
@@ -315,6 +317,13 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  // Suno issues for the Hermetic panel row (Magnum Opus / Eighth Sphere).
+  const { data: sunoIssues } = useQuery({
+    queryKey: ["suno-pipeline", selectedCompanyId ?? "_"] as const,
+    queryFn: () => sunoPipelineApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
@@ -423,6 +432,14 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Hermetic axiom — Tabula Smaragdina, sets the frame for everything below */}
+      <header
+        className="text-center font-serif italic text-[11px] uppercase tracking-[0.4em] text-muted-foreground/50 py-1 select-none"
+        title="Tabula Smaragdina — As above, so below"
+      >
+        Quod est superius est sicut quod est inferius
+      </header>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (
@@ -478,7 +495,7 @@ export function Dashboard() {
             {/* Usage Trend — 2/3 width */}
             <div className="md:col-span-2 rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="seclabel b"><span className="lc" /> The Ephemeris</h3>
+                <h3 className="seclabel b"><CaduceusMark /> The Ephemeris</h3>
                 <div className="flex gap-1">
                   {["7D", "14D", "30D"].map(p => (
                     <button key={p} className={cn("px-2 py-0.5 text-[10px] rounded", p === "30D" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
@@ -498,7 +515,7 @@ export function Dashboard() {
 
             {/* Top Models — 1/3 width */}
             <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
-              <h3 className="seclabel p mb-3"><span className="lc" /> The Daemons</h3>
+              <h3 className="seclabel p mb-3"><CaduceusMark /> The Daemons</h3>
               <div className="space-y-2">
                 {usageStats && usageStats.byModel.length > 0 ? (
                   usageStats.byModel.slice(0, 5).map((m) => (
@@ -530,7 +547,7 @@ export function Dashboard() {
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="seclabel w">
-                    <span className="lc" /> The Hermetica
+                    <CaduceusMark /> The Hermetica
                   </h3>
                   <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
                     <span className="text-[#ededed] font-medium">{recentActivity.length}</span> recent
@@ -566,7 +583,7 @@ export function Dashboard() {
               {/* Cache Efficiency */}
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="seclabel b"><span className="lc" /> Memoria</h3>
+                  <h3 className="seclabel b"><CaduceusMark /> Memoria</h3>
                   <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">30D</span>
                 </div>
                 {usageStats && usageStats.totalCalls > 0 ? (
@@ -588,7 +605,7 @@ export function Dashboard() {
               {/* Agent Skills */}
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="seclabel b"><span className="lc" /> The Grimoire</h3>
+                  <h3 className="seclabel b"><CaduceusMark /> The Grimoire</h3>
                   <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
                     <span className="text-[#ededed] font-medium">{agents?.length ?? 0}</span> skills
                   </span>
@@ -608,13 +625,21 @@ export function Dashboard() {
             </div>
           </div>
 
+          {/* ── The Mechanism: Magnum Opus + Solve et Coagula + Eighth Sphere
+                + Hermes' Errands + Ouroboros — five small Hermetic telemetry cards ── */}
+          <HermeticPanelsRow
+            sunoIssues={sunoIssues ?? null}
+            activity={activity ?? null}
+            runs={(runs as any) ?? null}
+          />
+
           {/* ── Songs Metrics · Brainwave Tuning · Chakra Roots ─────────── */}
           <SongsMetricsPanel companyId={selectedCompanyId!} />
 
           {/* ── 4. Recent Tasks ───────────────────────────────────────── */}
           <div className="min-w-0">
             <h3 className="seclabel r mb-3">
-              <span className="lc" /> RECENT TASKS
+              <CaduceusMark /> RECENT TASKS
             </h3>
             {recentIssues.length === 0 ? (
               <div className="border border-border p-4">
