@@ -1,16 +1,23 @@
 import {
-  Inbox,
-  CircleDot,
-  Target,
-  LayoutDashboard,
-  DollarSign,
-  History,
   Search,
-  SquarePen,
-  Network,
-  Settings,
-  Music,
 } from "lucide-react";
+
+// ── Alchemical & Planetary Glyphs ──────────────────────────────────
+// Planetary: ☉ Sun, ☽ Moon, ☿ Mercury, ♀ Venus, ♂ Mars, ♃ Jupiter, ♄ Saturn
+// Elemental: 🜂 Fire, 🜁 Air, 🜄 Water, 🜃 Earth
+// Tria Prima: 🜍 Sulphur (soul), ☿ Mercury (spirit), 🜔 Salt (body)
+const GLYPH = {
+  SUN:      "☉",   // Raphael / Tiphareth    → Dashboard
+  MOON:     "☽",   // Gabriel / Yesod        → Inbox
+  MERCURY:  "☿",   // Hermes / Hod           → Issues
+  VENUS:    "♀",   // Haniel / Netzach       → Settings
+  MARS:     "♂",   // Khamael / Geburah      → Activity
+  JUPITER:  "♃",   // Zadkiel / Chesed       → Goals
+  SATURN:   "♄",   // Cassiel / Tzaphkiel    → Org
+  FIRE:     "🜂",   // Michael / South        → New Issue
+  SULPHUR:  "🜍",   // Soul / anima           → Suno Pipeline
+  SALT:     "🜔",   // Body / corpus          → Costs
+} as const;
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -46,7 +53,48 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
+    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col relative overflow-hidden">
+      {/* Tree of Life — glowing background watermark */}
+      <svg
+        viewBox="0 0 200 320"
+        fill="none"
+        className="absolute inset-x-0 bottom-0 w-full pointer-events-none opacity-[0.04]"
+        style={{ filter: "drop-shadow(0 0 8px rgba(255,255,255,0.3))" }}
+        aria-hidden="true"
+      >
+        {/* 10 Sephiroth (spheres) */}
+        <circle cx="100" cy="20"  r="12" stroke="#fff" strokeWidth="1.5" /> {/* Keter */}
+        <circle cx="65"  cy="60"  r="10" stroke="#fff" strokeWidth="1.5" /> {/* Chokmah */}
+        <circle cx="135" cy="60"  r="10" stroke="#fff" strokeWidth="1.5" /> {/* Binah */}
+        <circle cx="65"  cy="120" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Chesed */}
+        <circle cx="135" cy="120" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Geburah */}
+        <circle cx="100" cy="150" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Tiphareth */}
+        <circle cx="65"  cy="200" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Netzach */}
+        <circle cx="135" cy="200" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Hod */}
+        <circle cx="100" cy="240" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Yesod */}
+        <circle cx="100" cy="300" r="12" stroke="#fff" strokeWidth="1.5" /> {/* Malkuth */}
+        {/* 22 Paths (connecting lines) */}
+        <line x1="100" y1="32" x2="65"  y2="50"  stroke="#fff" strokeWidth="1" /> {/* Keter-Chokmah */}
+        <line x1="100" y1="32" x2="135" y2="50"  stroke="#fff" strokeWidth="1" /> {/* Keter-Binah */}
+        <line x1="65"  y1="60" x2="135" y2="60"  stroke="#fff" strokeWidth="1" /> {/* Chokmah-Binah */}
+        <line x1="65"  y1="70" x2="65"  y2="110" stroke="#fff" strokeWidth="1" /> {/* Chokmah-Chesed */}
+        <line x1="135" y1="70" x2="135" y2="110" stroke="#fff" strokeWidth="1" /> {/* Binah-Geburah */}
+        <line x1="65"  y1="70" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Chokmah-Tiphareth */}
+        <line x1="135" y1="70" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Binah-Tiphareth */}
+        <line x1="65"  y1="120" x2="135" y2="120" stroke="#fff" strokeWidth="1" /> {/* Chesed-Geburah */}
+        <line x1="65"  y1="130" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Chesed-Tiphareth */}
+        <line x1="135" y1="130" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Geburah-Tiphareth */}
+        <line x1="65"  y1="130" x2="65"  y2="190" stroke="#fff" strokeWidth="1" /> {/* Chesed-Netzach */}
+        <line x1="135" y1="130" x2="135" y2="190" stroke="#fff" strokeWidth="1" /> {/* Geburah-Hod */}
+        <line x1="100" y1="160" x2="65"  y2="190" stroke="#fff" strokeWidth="1" /> {/* Tiphareth-Netzach */}
+        <line x1="100" y1="160" x2="135" y2="190" stroke="#fff" strokeWidth="1" /> {/* Tiphareth-Hod */}
+        <line x1="100" y1="160" x2="100" y2="230" stroke="#fff" strokeWidth="1" /> {/* Tiphareth-Yesod */}
+        <line x1="65"  y1="200" x2="135" y2="200" stroke="#fff" strokeWidth="1" /> {/* Netzach-Hod */}
+        <line x1="65"  y1="210" x2="100" y2="230" stroke="#fff" strokeWidth="1" /> {/* Netzach-Yesod */}
+        <line x1="135" y1="210" x2="100" y2="230" stroke="#fff" strokeWidth="1" /> {/* Hod-Yesod */}
+        <line x1="100" y1="250" x2="100" y2="288" stroke="#fff" strokeWidth="1" /> {/* Yesod-Malkuth */}
+      </svg>
+
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         {selectedCompany?.brandColor && (
@@ -75,14 +123,14 @@ export function Sidebar() {
             onClick={() => openNewIssue()}
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
-            <SquarePen className="h-4 w-4 shrink-0" />
+            <span className="flex h-4 w-4 items-center justify-center text-[15px] leading-none opacity-80 shrink-0">{GLYPH.FIRE}</span>
             <span className="truncate">New Issue</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label="Dashboard" icon={GLYPH.SUN} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
-            icon={Inbox}
+            icon={GLYPH.MOON}
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
@@ -97,9 +145,9 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
-          <SidebarNavItem to="/suno" label="Suno Pipeline" icon={Music} />
+          <SidebarNavItem to="/issues" label="The Workings" icon={GLYPH.MERCURY} />
+          <SidebarNavItem to="/goals" label="The Intentions" icon={GLYPH.JUPITER} />
+          <SidebarNavItem to="/suno" label="The Hermetica" icon={GLYPH.SULPHUR} />
         </SidebarSection>
 
         <SidebarProjects />
@@ -107,10 +155,10 @@ export function Sidebar() {
         <SidebarAgents />
 
         <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+          <SidebarNavItem to="/org" label="Org" icon={GLYPH.SATURN} />
+          <SidebarNavItem to="/costs" label="Costs" icon={GLYPH.SALT} />
+          <SidebarNavItem to="/activity" label="Activity" icon={GLYPH.MARS} />
+          <SidebarNavItem to="/company/settings" label="Settings" icon={GLYPH.VENUS} />
         </SidebarSection>
 
         <PluginSlotOutlet

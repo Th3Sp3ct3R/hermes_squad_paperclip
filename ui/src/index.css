@@ -80,39 +80,120 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  --background: oklch(0.071 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: oklch(0.098 0 0);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: oklch(0.098 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
+  --primary-foreground: oklch(0.098 0 0);
+  --secondary: oklch(0.155 0 0);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
+  --muted: oklch(0.155 0 0);
   --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --accent: oklch(0.155 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.637 0.237 25.331);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
+  --border: oklch(0.195 0 0);
+  --input: oklch(0.195 0 0);
   --ring: oklch(0.439 0 0);
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.145 0 0);
+  --sidebar: oklch(0.071 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent: oklch(0.155 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
+  --sidebar-border: oklch(0.195 0 0);
   --sidebar-ring: oklch(0.439 0 0);
 }
+
+/* ── Lightsaber accent system ── */
+:root {
+  --luke: #4ea8ff;
+  --luke-glow: rgba(78,168,255,.55);
+  --vader: #ff2d2d;
+  --vader-glow: rgba(255,45,45,.55);
+  --mace: #b964ff;
+  --mace-glow: rgba(185,100,255,.55);
+}
+
+/* glow primitives */
+.glow-w { color: #fff; text-shadow: 0 0 12px rgba(255,255,255,.45), 0 0 28px rgba(255,255,255,.2); }
+.glow-b { color: var(--luke); text-shadow: 0 0 8px var(--luke-glow), 0 0 22px rgba(78,168,255,.35); }
+.glow-r { color: var(--vader); text-shadow: 0 0 8px var(--vader-glow), 0 0 22px rgba(255,45,45,.35); }
+.glow-p { color: var(--mace); text-shadow: 0 0 8px var(--mace-glow), 0 0 22px rgba(185,100,255,.35); }
+
+/* legacy compat */
+.glow-text { color: #fff; text-shadow: 0 0 12px rgba(255,255,255,.45), 0 0 28px rgba(255,255,255,.2); }
+.glow-stat { color: #fff; text-shadow: 0 0 12px rgba(255,255,255,.5), 0 0 28px rgba(255,255,255,.2); }
+.glow-stat-accent { text-shadow: 0 0 12px currentColor, 0 0 24px color-mix(in srgb, currentColor 30%, transparent); }
+
+/* section labels — mono allcaps with lightsaber left bar */
+.section-header, .seclabel {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted-foreground);
+}
+.section-header::before, .seclabel .lc {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 0.6875rem;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.section-header::before { background: #fff; box-shadow: 0 0 6px rgba(255,255,255,.45); }
+.seclabel.b .lc, .section-header.b::before { background: var(--luke); box-shadow: 0 0 6px var(--luke-glow); }
+.seclabel.r .lc, .section-header.r::before { background: var(--vader); box-shadow: 0 0 6px var(--vader-glow); }
+.seclabel.p .lc, .section-header.p::before { background: var(--mace); box-shadow: 0 0 6px var(--mace-glow); }
+.seclabel.w .lc, .section-header.w::before { background: #fff; box-shadow: 0 0 6px rgba(255,255,255,.45); }
+
+/* ambient saber glows on body (dark mode only) */
+.dark body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(900px 500px at 8% -5%, rgba(78,168,255,.08), transparent 60%),
+    radial-gradient(900px 500px at 95% 8%, rgba(255,45,45,.06), transparent 60%),
+    radial-gradient(1100px 600px at 50% 110%, rgba(185,100,255,.06), transparent 60%);
+}
+
+/* subtle grid overlay */
+.dark body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(circle at 50% 30%, black 30%, transparent 80%);
+}
+
+/* draw animation for sparklines */
+.draw { stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: draw 1.6s ease-out forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+
+/* card entry animation */
+@keyframes card-rise { to { opacity: 1; transform: none; } }
 
 @layer base {
   * {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
+import { TopBar } from "./dashboard/TopBar";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
@@ -95,8 +96,12 @@ export function Layout() {
       const fallback = (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
         ?? companies[0]
         ?? null;
-      if (fallback && selectedCompanyId !== fallback.id) {
-        setSelectedCompanyId(fallback.id, { source: "route_sync" });
+      if (fallback) {
+        if (selectedCompanyId !== fallback.id) {
+          setSelectedCompanyId(fallback.id, { source: "route_sync" });
+        }
+        const suffix = location.pathname.replace(/^\/[^/]+/, "");
+        navigate(`/${fallback.issuePrefix}${suffix}${location.search}`, { replace: true });
       }
       return;
     }
@@ -265,6 +270,7 @@ export function Layout() {
         Skip to Main Content
       </a>
       <WorktreeBanner />
+      {!isMobile && <TopBar />}
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
         {isMobile && sidebarOpen && (
           <button

@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600&family=EB+Garamond:ital@0;1&display=swap');
+
+:root {
+  --bg: #000;
+  --bg-1: #0a0a0a;
+  --bg-2: #111;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --text: #fff;
+  --text-2: #a3a3a3;
+  --text-3: #6a6a6a;
+  --text-4: #404040;
+  --blue: #3b82f6;
+  --purple: #c084fc;
+  --red: #ef4444;
+  --green: #10b981;
+  --gold: #c9a449;
+  --gold-light: #e8c46a;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Geist', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Section Header Pattern ────────────────────────────────── */
+.sec-header {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sec-header strong { color: var(--text); font-weight: 500; }
+
+.sec-bar {
+  width: 3px; height: 14px; border-radius: 1px;
+  display: inline-block; flex-shrink: 0;
+}
+
+/* ── Mono Label ────────────────────────────────────────────── */
+.mono-label {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 10px; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--text-3);
+}
+
+/* ── Glow Effects ──────────────────────────────────────────── */
+.glow-w { text-shadow: 0 0 20px rgba(255,255,255,0.15); }
+.glow-b { text-shadow: 0 0 20px rgba(59,130,246,0.3); color: var(--blue); }
+.glow-p { text-shadow: 0 0 20px rgba(192,132,252,0.3); color: var(--purple); }
+.glow-r { text-shadow: 0 0 20px rgba(239,68,68,0.3); color: var(--red); }
+.glow-g { text-shadow: 0 0 20px rgba(16,185,129,0.3); color: var(--green); }
+.glow-gold { text-shadow: 0 0 20px rgba(201,164,73,0.3); color: var(--gold-light); }
+
+/* ── Status Pill ───────────────────────────────────────────── */
+.status-pill {
+  font-family: 'Geist Mono', monospace;
+  font-size: 9px; letter-spacing: 0.15em;
+  text-transform: uppercase; padding: 3px 8px; border-radius: 2px;
+}
+
+/* ── Feed Terminal ─────────────────────────────────────────── */
+.feed-line {
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px; line-height: 1.6; color: var(--text-2);
+  padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.feed-line .timestamp { color: var(--text-4); margin-right: 8px; }
+.feed-line .agent-tag { color: var(--blue); margin-right: 4px; }
+.feed-line.error { color: var(--red); }
+.feed-line.cache { color: var(--green); }
+.feed-line.system, .feed-line.tool_run { color: var(--purple); }
+
+/* ── Sparkline Draw ────────────────────────────────────────── */
+@keyframes spark-draw {
+  from { stroke-dashoffset: 400; }
+  to { stroke-dashoffset: 0; }
+}
+.spark-draw { stroke-dasharray: 400; animation: spark-draw 1.2s ease-out forwards; }
+
+/* ── Card Rise Animation ───────────────────────────────────── */
+@keyframes card-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+
+/* ════════════════════════════════════════════════════════════
+   SONG METRICS — Brainwave Tuning Panel
+   ════════════════════════════════════════════════════════════ */
+.song-metrics .sm-top {
+  display: grid; grid-template-columns: 1fr auto;
+  gap: 24px; padding: 18px 20px 14px; align-items: end;
+}
+.sm-top-stat.right { text-align: right; }
+.sm-big {
+  font-size: 36px; font-weight: 500; line-height: 1;
+  letter-spacing: -0.02em; color: var(--text);
+}
+.sm-big.purple { color: var(--purple); }
+.sm-unit { font-size: 14px; color: var(--text-3); margin-left: 2px; font-weight: 400; }
+.sm-lbl {
+  font-family: 'Geist Mono', monospace; font-size: 9px;
+  letter-spacing: 0.18em; color: var(--text-3);
+  text-transform: uppercase; margin-top: 6px;
+}
+
+.sm-now-playing {
+  margin: 6px 20px 14px; padding: 14px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(192,132,252,0.05), var(--bg-2));
+  border-radius: 4px;
+}
+.sm-np-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.sm-np-title { font-family: 'Cinzel', serif; font-size: 13px; font-weight: 500; letter-spacing: 0.04em; color: var(--text); }
+.sm-np-meta {
+  font-family: 'Geist Mono', monospace; font-size: 9px;
+  letter-spacing: 0.15em; color: var(--text-3); text-transform: uppercase;
+  margin-top: 3px; display: flex; align-items: center; gap: 12px;
+}
+.sm-np-playing { display: inline-flex; align-items: center; gap: 5px; color: var(--purple); }
+.sm-np-dot {
+  width: 6px; height: 6px; background: var(--purple);
+  border-radius: 50%; box-shadow: 0 0 8px var(--purple);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+.sm-np-time { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-2); }
+
+.sm-bands { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 20px 14px; }
+.sm-band { border: 1px solid var(--line); border-radius: 4px; padding: 12px; background: var(--bg-2); }
+.sm-band-head {
+  display: flex; align-items: baseline; gap: 6px;
+  font-family: 'Geist Mono', monospace; font-size: 10px;
+  letter-spacing: 0.15em; color: var(--text-3); text-transform: uppercase;
+}
+.sm-band-sym { font-size: 13px; font-weight: 500; }
+.sm-band-name { color: var(--text-2); }
+.sm-band-range { color: var(--text-4); }
+.sm-band-pct { font-size: 26px; font-weight: 500; margin-top: 6px; line-height: 1; letter-spacing: -0.01em; }
+.sm-band-lbl {
+  font-family: 'Geist Mono', monospace; font-size: 9px;
+  letter-spacing: 0.18em; color: var(--text-3); text-transform: uppercase; margin-top: 4px;
+}
+.sm-band-wave { margin-top: 8px; height: 22px; }
+
+.sm-genres { padding: 14px 20px 20px; border-top: 1px solid var(--line); }
+.sm-genres-lbl {
+  font-family: 'Geist Mono', monospace; font-size: 10px;
+  letter-spacing: 0.18em; color: var(--text-3); text-transform: uppercase; margin-bottom: 12px;
+}
+.sm-genre { display: grid; grid-template-columns: 140px 1fr 60px; gap: 14px; align-items: center; padding: 6px 0; }
+.sm-genre-name { font-size: 13px; color: var(--text-2); }
+.sm-genre-bar { height: 4px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
+.sm-genre-fill { height: 100%; background: linear-gradient(90deg, var(--purple), #d946ef); border-radius: 2px; }
+.sm-genre-time { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-3); text-align: right; }

@@ -6,7 +6,7 @@ import type { LucideIcon } from "lucide-react";
 interface SidebarNavItemProps {
   to: string;
   label: string;
-  icon: LucideIcon;
+  icon: LucideIcon | string;
   end?: boolean;
   className?: string;
   badge?: number;
@@ -18,7 +18,7 @@ interface SidebarNavItemProps {
 export function SidebarNavItem({
   to,
   label,
-  icon: Icon,
+  icon,
   end,
   className,
   badge,
@@ -27,6 +27,8 @@ export function SidebarNavItem({
   liveCount,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
+  const isGlyph = typeof icon === "string";
+  const Icon = isGlyph ? null : icon;
 
   return (
     <NavLink
@@ -44,7 +46,11 @@ export function SidebarNavItem({
       }
     >
       <span className="relative shrink-0">
-        <Icon className="h-4 w-4" />
+        {isGlyph ? (
+          <span className="flex h-4 w-4 items-center justify-center text-[15px] leading-none opacity-80">{icon}</span>
+        ) : (
+          Icon && <Icon className="h-4 w-4" />
+        )}
         {alert && (
           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
         )}
