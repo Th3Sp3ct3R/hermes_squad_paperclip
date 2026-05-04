@@ -55,6 +55,7 @@ import {
   generateMinimaxMusic,
   MINIMAX_MUSIC_MODELS,
   persistMinimaxAudio,
+  persistAudioFromUrl,
   type MinimaxMusicModel,
 } from "../services/minimax-music.js";
 import { generateViaSuno } from "../services/suno-browser-agent.js";
@@ -231,6 +232,38 @@ const dispatchSunoSchema = z.object({
   companyId: z.string().uuid(),
   /** Override the prompt (defaults to metadata.stages.soundPrompt). */
   prompt: z.string().min(1).max(2000).optional(),
+});
+
+/**
+ * Bulk-import a song that was generated outside paperclip (e.g. directly on
+ * suno.com or via the CDP browser test harness). Creates a new sunoIssue,
+ * downloads each variant from the given Suno CDN URL, persists the bytes
+ * via paperclip's storage so the audio survives third-party CDN changes,
+ * and writes the standard pipeline metadata so downstream agents (Jophiel
+ * cover-art, Gabriel release copy, Sandalphon publish) can pick it up.
+ */
+const importSunoSchema = z.object({
+  companyId: z.string().uuid(),
+  concept: z.string().min(1).max(2000),
+  targetChakra: chakraSchema,
+  targetFrequency: z.number().int().positive().optional(),
+  genre: z.string().max(200).nullable().optional(),
+  /**
+   * Sound-prompt that produced these variants. Stored in
+   * metadata.stages.soundPrompt so /generate/visual-prompt and
+   * /generate/cover-art can run against the imported issue.
+   */
+  soundPrompt: z.string().min(1).max(2000),
+  variants: z
+    .array(
+      z.object({
+        sunoSongId: z.string().min(1),
+        sunoUrl: z.string().url(),
+        title: z.string().max(120).optional(),
+      }),
+    )
+    .min(1)
+    .max(8),
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1302,6 +1335,131 @@ export function sunoPipelineRoutes(db: Db) {
       });
 
       res.json(row);
+    },
+  );
+
+  // ── POST /import-suno ────────────────────────────────────────────────────
+  // Import an out-of-band Suno generation (made directly on suno.com or via
+  // the CDP test harness) into paperclip. Creates a new sunoIssue, persists
+  // each variant's audio to paperclip's storage so the songs are owned (not
+  // dependent on cdn1.suno.ai staying available), and writes the metadata
+  // shape downstream agents expect so cover-art / release-copy / publish
+  // all work against the imported row.
+  router.post(
+    "/suno-pipeline/import-suno",
+    validate(importSunoSchema),
+    async (req, res) => {
+      const body = req.body as z.infer<typeof importSunoSchema>;
+      assertCompanyAccess(req, body.companyId);
+      const actor = getActorInfo(req);
+
+      // 1. Persist every variant. Done in parallel because each is an
+      //    independent CDN fetch + storage write. Returns a list of
+      //    { sunoSongId, audioUrl: <permanent contentPath>, title } that
+      //    becomes the canonical sunoVariants array on the issue.
+      const persistedVariants = await Promise.all(
+        body.variants.map(async (v) => {
+          const persisted = await persistAudioFromUrl({
+            db,
+            companyId: body.companyId,
+            audioUrl: v.sunoUrl,
+            identifier: v.sunoSongId,
+            filenamePrefix: "suno",
+            namespace: "music/suno",
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          return {
+            sunoSongId: v.sunoSongId,
+            audioUrl: persisted.contentPath,
+            originalSunoUrl: v.sunoUrl,
+            assetId: persisted.assetId,
+            title: v.title ?? "",
+            byteSize: persisted.byteSize,
+            sha256: persisted.sha256,
+          };
+        }),
+      );
+
+      const primary = persistedVariants[0];
+      if (!primary) {
+        // Schema enforces .min(1) but TS narrowing wants this guard.
+        throw unprocessable("import-suno requires at least one variant");
+      }
+
+      // 2. Build the metadata.stages payload that downstream agents read.
+      //    Mirrors the shape produced by dispatch-suno's success path so
+      //    /generate/visual-prompt and /generate/cover-art work without
+      //    branching on the issue's origin.
+      const initialMeta = appendHistory(
+        {
+          stages: {
+            soundPrompt: body.soundPrompt,
+            audioUrl: primary.audioUrl,
+            sunoSongId: primary.sunoSongId,
+            sunoVariants: persistedVariants.map((v) => ({
+              songId: v.sunoSongId,
+              audioUrl: v.audioUrl,
+              title: v.title,
+              originalSunoUrl: v.originalSunoUrl,
+              assetId: v.assetId,
+            })),
+          },
+          lastMusicBackend: "suno",
+          importedFromSuno: true,
+        },
+        {
+          stage: "audioUrl",
+          output: primary.audioUrl,
+          at: new Date().toISOString(),
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          agentName: "Raziel/Suno (imported)",
+          status: "REVIEW" as SunoStatus,
+        },
+      );
+
+      // 3. Insert the issue. Status starts at REVIEW because audio is already
+      //    finalized — no GENERATING phase to transition through. Frequency
+      //    derives from chakra when not explicitly passed.
+      const targetFrequency =
+        body.targetFrequency ?? SUNO_CHAKRA_FREQUENCIES[body.targetChakra];
+      const [issue] = await db
+        .insert(sunoIssues)
+        .values({
+          companyId: body.companyId,
+          concept: body.concept,
+          targetChakra: body.targetChakra,
+          targetFrequency,
+          genre: body.genre ?? null,
+          status: "REVIEW",
+          audioUrl: primary.audioUrl,
+          sunoSongId: primary.sunoSongId,
+          metadata: initialMeta,
+        })
+        .returning();
+      if (!issue) throw new Error("Failed to insert imported sunoIssue");
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.imported",
+        entityType: "suno_issue",
+        entityId: issue.id,
+        details: {
+          concept: body.concept,
+          targetChakra: body.targetChakra,
+          variantCount: persistedVariants.length,
+          totalBytes: persistedVariants.reduce((sum, v) => sum + v.byteSize, 0),
+          primarySongId: primary.sunoSongId,
+        },
+      });
+
+      res.status(201).json(issue);
     },
   );
 

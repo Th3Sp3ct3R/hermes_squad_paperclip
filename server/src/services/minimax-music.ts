@@ -287,57 +287,66 @@ export interface PersistMinimaxAudioResult {
 }
 
 /**
- * Download the MiniMax-generated audio from its expiring Aliyun OSS URL and
- * persist the bytes through paperclip's storage service. Inserts an `assets`
- * row so the audio is queryable, deduplicated by sha256, and served via the
- * standard `/api/assets/:id/content` endpoint.
- *
- * Throws if the audioUrl is unreachable or the storage write fails. Callers
- * should treat this as best-effort during the 24h window — once the original
- * URL expires, this function cannot recover the bytes.
+ * Generic audio-URL → paperclip storage persistence. Used for both MiniMax
+ * (Aliyun OSS pre-signed URLs that expire in 24h) and Suno (cdn1.suno.ai
+ * URLs that are nominally long-lived but still third-party). Downloads the
+ * bytes, writes through paperclip's storage abstraction, registers an
+ * asset row, and returns a permanent /api/assets/:id/content path.
  */
-export async function persistMinimaxAudio(
-  input: PersistMinimaxAudioInput,
-): Promise<PersistMinimaxAudioResult> {
+export interface PersistAudioInput {
+  db: Db;
+  companyId: string;
+  audioUrl: string;
+  /** Identifier appended to the original filename (e.g. traceId, songId). */
+  identifier: string | null;
+  /** Filename prefix used in originalFilename, e.g. "minimax" or "suno". */
+  filenamePrefix: string;
+  /** Storage namespace under the company root. e.g. "music/minimax" or "music/suno". */
+  namespace: string;
+  agentId?: string | null;
+  userId?: string | null;
+}
+
+export interface PersistAudioResult {
+  assetId: string;
+  contentPath: string;
+  sha256: string;
+  byteSize: number;
+  contentType: string;
+}
+
+export async function persistAudioFromUrl(
+  input: PersistAudioInput,
+): Promise<PersistAudioResult> {
   const start = Date.now();
-  // 1. Pull the bytes from MiniMax's CDN. Use a generous timeout — the
-  // Aliyun OSS pre-signed URLs typically respond within a second, but
-  // we keep slack for slow networks.
   const res = await fetch(input.audioUrl, {
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
     throw new Error(
-      `[minimax-persist] Failed to fetch audio from MiniMax CDN: ${res.status} ${res.statusText}`,
+      `[audio-persist] Failed to fetch audio from ${input.audioUrl}: ${res.status} ${res.statusText}`,
     );
   }
   const contentType = res.headers.get("content-type") ?? "audio/mpeg";
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length === 0) {
-    throw new Error("[minimax-persist] MiniMax returned empty audio body");
+    throw new Error("[audio-persist] Empty audio body returned from source URL");
   }
 
-  // 2. Build a deterministic original filename so the asset is recognizable
-  // in lists / downloads. Falls back to a timestamp when no traceId.
-  const safeTrace = input.traceId
-    ? input.traceId.replace(/[^a-zA-Z0-9_-]/g, "")
+  const safeId = input.identifier
+    ? input.identifier.replace(/[^a-zA-Z0-9_-]/g, "")
     : `t${Date.now()}`;
-  const originalFilename = `minimax-${safeTrace}.mp3`;
+  const originalFilename = `${input.filenamePrefix}-${safeId}.mp3`;
 
-  // 3. Write through paperclip's storage abstraction. Returns provider/key/
-  // sha256/byteSize. Local-disk provider writes under the company's bucket;
-  // S3/Supabase providers write to their respective buckets.
   const storage = getStorageService();
   const stored = await storage.putFile({
     companyId: input.companyId,
-    namespace: input.namespace ?? "music/minimax",
+    namespace: input.namespace,
     originalFilename,
     contentType,
     body: buf,
   });
 
-  // 4. Register the asset in the DB so it has a permanent ID and is served
-  // via /api/assets/:id/content.
   const asset = await assetService(input.db).create(input.companyId, {
     provider: stored.provider,
     objectKey: stored.objectKey,
@@ -356,9 +365,10 @@ export async function persistMinimaxAudio(
       byteSize: stored.byteSize,
       contentType,
       elapsedMs: Date.now() - start,
-      traceId: input.traceId,
+      identifier: input.identifier,
+      namespace: input.namespace,
     },
-    "[minimax-persist] Audio persisted to paperclip storage",
+    "[audio-persist] Audio persisted to paperclip storage",
   );
 
   return {
@@ -368,4 +378,25 @@ export async function persistMinimaxAudio(
     byteSize: stored.byteSize,
     contentType,
   };
+}
+
+/**
+ * MiniMax-flavored convenience wrapper around persistAudioFromUrl. Sets the
+ * "minimax" filename prefix and "music/minimax" namespace by default.
+ *
+ * Existing call sites depend on this signature — keep stable.
+ */
+export async function persistMinimaxAudio(
+  input: PersistMinimaxAudioInput,
+): Promise<PersistMinimaxAudioResult> {
+  return persistAudioFromUrl({
+    db: input.db,
+    companyId: input.companyId,
+    audioUrl: input.audioUrl,
+    identifier: input.traceId,
+    filenamePrefix: "minimax",
+    namespace: input.namespace ?? "music/minimax",
+    agentId: input.agentId,
+    userId: input.userId,
+  });
 }
