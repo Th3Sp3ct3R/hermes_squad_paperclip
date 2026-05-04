@@ -129,7 +129,7 @@ export function SunoPipeline() {
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Suno Pipeline" }]);
+    setBreadcrumbs([{ label: "Musica Universalis" }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
@@ -207,29 +207,49 @@ export function SunoPipeline() {
   return (
     <div className="suno-flower-backdrop flex flex-col gap-6 p-6">
       <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-4">
+        <div className="flex items-start gap-5">
           {/* Caduceus badge — total tracks counter, lunar-mercurial Albedo glow */}
           <CaduceusBadge totalTracks={issues?.length ?? 0} />
-          <div>
-            <div className="flex items-center gap-2">
-              <Music className="h-5 w-5 text-muted-foreground" />
-              <h1 className="text-2xl font-semibold tracking-tight">Suno Pipeline</h1>
-            </div>
-            <p className="text-sm text-muted-foreground mt-1">
-              Autonomous music production board. Concepts move from draft through
-              generation, review, and release.
+          <div className="pt-1">
+            <h1
+              className="text-3xl font-semibold tracking-tight"
+              style={{
+                color: "#FFFFFF",
+                textShadow:
+                  "0 0 8px rgba(255,255,255,0.55), 0 0 18px rgba(192,192,192,0.35), 0 0 32px rgba(192,192,192,0.18)",
+              }}
+            >
+              <span aria-hidden style={{ marginRight: "0.4rem" }}>⚕</span>
+              Musica Universalis
+            </h1>
+            <p
+              className="text-sm mt-1.5 italic"
+              style={{
+                color: "#C0C0C0",
+                textShadow: "0 0 6px rgba(192,192,192,0.25)",
+                letterSpacing: "0.02em",
+              }}
+            >
+              The harmony of the spheres, made audible.
             </p>
           </div>
         </div>
+        {/* Begin Opus / Cancel — Albedo button when closed, ghost top-right
+            when open so the form has the visual gravity, not the cancel. */}
         <Button
           onClick={() => setShowCreate((v) => !v)}
           size="sm"
-          // Albedo register accent — silver border, white text, black field;
-          // becomes Citrinitas (yellow) when the create panel is open.
+          variant={showCreate ? "ghost" : "default"}
           style={
             showCreate
-              ? { backgroundColor: "#FFD700", color: "#000000", borderColor: "#C0C0C0" }
-              : { backgroundColor: "#FFFFFF", color: "#000000", borderColor: "#C0C0C0" }
+              ? { color: "#C0C0C0" }
+              : {
+                  backgroundColor: "#FFFFFF",
+                  color: "#000000",
+                  borderColor: "#C0C0C0",
+                  boxShadow:
+                    "0 0 12px rgba(255,255,255,0.35), inset 0 0 8px rgba(192,192,192,0.2)",
+                }
           }
         >
           {showCreate ? <X className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
@@ -392,26 +412,30 @@ interface ArchangelAgentBarProps {
 function CaduceusBadge({ totalTracks }: { totalTracks: number }) {
   return (
     <div
-      className="flex flex-col items-center justify-center gap-1 rounded-2xl border p-3 shrink-0"
+      className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border p-3 shrink-0"
       style={{
-        backgroundColor: "rgba(255,255,255,0.04)",
-        borderColor: "#C0C0C0",
-        boxShadow: "inset 0 0 24px rgba(192,192,192,0.08), 0 0 18px rgba(192,192,192,0.18)",
-        width: 96,
-        height: 96,
+        backgroundColor: "#0a0a0a",
+        borderColor: "#1a1a1a",
+        boxShadow:
+          "inset 0 0 32px rgba(192,192,192,0.06), 0 0 22px rgba(255,255,255,0.10), 0 4px 18px rgba(0,0,0,0.6)",
+        width: 104,
+        height: 104,
       }}
       title={`${totalTracks} tracks in this pipeline — caduceus, the Hermes Squad orchestration glyph`}
     >
       <svg
         viewBox="0 0 64 80"
-        width="48"
-        height="60"
+        width="56"
+        height="68"
         fill="none"
         stroke="#FFFFFF"
-        strokeWidth="1.5"
+        strokeWidth="1.6"
         strokeLinecap="round"
         strokeLinejoin="round"
-        style={{ filter: "drop-shadow(0 0 4px rgba(255,255,255,0.85)) drop-shadow(0 0 8px rgba(192,192,192,0.4))" }}
+        style={{
+          filter:
+            "drop-shadow(0 0 3px rgba(255,255,255,1)) drop-shadow(0 0 8px rgba(255,255,255,0.7)) drop-shadow(0 0 16px rgba(192,192,192,0.45))",
+        }}
         aria-hidden
       >
         {/* central staff */}
@@ -431,8 +455,12 @@ function CaduceusBadge({ totalTracks }: { totalTracks: number }) {
         <ellipse cx="41.5" cy="34" rx="2" ry="1.4" fill="#FFFFFF" />
       </svg>
       <span
-        className="text-xs font-semibold tabular-nums tracking-wide"
-        style={{ color: "#FFFFFF", textShadow: "0 0 6px rgba(192,192,192,0.6)" }}
+        className="text-base font-semibold tabular-nums tracking-wide"
+        style={{
+          color: "#FFFFFF",
+          textShadow:
+            "0 0 4px rgba(255,255,255,1), 0 0 10px rgba(255,255,255,0.8), 0 0 18px rgba(192,192,192,0.5)",
+        }}
       >
         {totalTracks}
       </span>
