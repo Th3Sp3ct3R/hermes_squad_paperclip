@@ -1108,6 +1108,93 @@ export function sunoPipelineRoutes(db: Db) {
     res.json(row);
   });
 
+  // ── POST /bulk-approve ────────────────────────────────────────────────────
+  // Move many REVIEW issues to APPROVED in one request. Used to clear
+  // backlog when Raphael isn't running autonomously, and as the natural
+  // exit gate for batch-generated songs once the user has spot-checked.
+  // Subject to the same Raphael agent-name lock as /:id/approve, but
+  // human callers (req.actor.type === "user") bypass.
+  router.post(
+    "/suno-pipeline/bulk-approve",
+    validate(
+      z.object({
+        companyId: z.string().uuid(),
+        issueIds: z.array(z.string().uuid()).min(1).max(500),
+        note: z.string().max(2000).optional(),
+      }),
+    ),
+    async (req, res) => {
+      const body = req.body as {
+        companyId: string;
+        issueIds: string[];
+        note?: string;
+      };
+      assertCompanyAccess(req, body.companyId);
+
+      const agentName = await resolveActorAgentName(db, req);
+      if (req.actor.type === "agent" && agentName !== "Raphael") {
+        throw forbidden(
+          `Only Raphael can approve Suno issues (calling agent: ${agentName ?? "unknown"})`,
+        );
+      }
+
+      const actor = getActorInfo(req);
+      const results: Array<{ id: string; status: string; ok: boolean; reason?: string }> = [];
+
+      for (const id of body.issueIds) {
+        try {
+          const existing = await loadIssueOrThrow(id, body.companyId);
+          if (existing.status !== "REVIEW") {
+            results.push({
+              id,
+              status: existing.status,
+              ok: false,
+              reason: `Not in REVIEW (current=${existing.status})`,
+            });
+            continue;
+          }
+          const [row] = await db
+            .update(sunoIssues)
+            .set({ status: "APPROVED", updatedAt: new Date() })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (!row) {
+            results.push({ id, status: existing.status, ok: false, reason: "row vanished" });
+            continue;
+          }
+          await syncLinkedIssueStatus(row, "APPROVED");
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.approved",
+            entityType: "suno_issue",
+            entityId: row.id,
+            details: { previousStatus: "REVIEW", newStatus: "APPROVED", note: body.note ?? null, bulk: true },
+          });
+          results.push({ id, status: "APPROVED", ok: true });
+        } catch (err) {
+          results.push({
+            id,
+            status: "?",
+            ok: false,
+            reason: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      const succeeded = results.filter((r) => r.ok).length;
+      res.json({
+        total: results.length,
+        approved: succeeded,
+        skipped: results.length - succeeded,
+        results,
+      });
+    },
+  );
+
   // ── POST /:id/reject ──────────────────────────────────────────────────────
   // Raphael moves REVIEW → GENERATING with feedback. Bumps metadata.iteration
   // so we can show the rep counter in the UI.

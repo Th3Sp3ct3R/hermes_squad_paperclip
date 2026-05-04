@@ -192,7 +192,7 @@ export function SunoPipeline() {
         </div>
         <Button onClick={() => setShowCreate((v) => !v)} size="sm">
           {showCreate ? <X className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
-          {showCreate ? "Cancel" : "New Concept"}
+          {showCreate ? "Cancel" : "As Above, So Below"}
         </Button>
       </div>
 
