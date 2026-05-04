@@ -40,7 +40,7 @@ import {
   type SunoStatus,
 } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
-import { logActivity } from "../services/index.js";
+import { logActivity, publishLiveEvent } from "../services/index.js";
 import {
   buildLyricsPrompt,
   buildSoundPromptPrompt,
@@ -54,6 +54,7 @@ import { generateCoverArt } from "../services/cover-art-gen.js";
 import {
   generateMinimaxMusic,
   MINIMAX_MUSIC_MODELS,
+  persistMinimaxAudio,
   type MinimaxMusicModel,
 } from "../services/minimax-music.js";
 import { generateViaSuno } from "../services/suno-browser-agent.js";
@@ -1228,20 +1229,39 @@ export function sunoPipelineRoutes(db: Db) {
         throw unprocessable("MiniMax returned hex audio; expected URL");
       }
       const dispatchActor = getActorInfo(req);
+
+      // Persist MiniMax audio to paperclip storage so it survives past the
+      // 24h Aliyun OSS expiry. The permanent contentPath replaces the raw
+      // pre-signed URL in the DB.
+      const persisted = await persistMinimaxAudio({
+        db,
+        companyId: body.companyId,
+        audioUrl: result.audio,
+        traceId: result.traceId,
+        agentId: dispatchActor.agentId,
+        userId: dispatchActor.actorType === "user" ? dispatchActor.actorId : null,
+      });
+
       const minimaxSongId = result.traceId
         ? `minimax:${result.traceId}`
         : `minimax:${Date.now()}`;
       const nextMeta = appendHistory(
         {
           ...meta,
-          stages: { ...stages, minimaxAudioUrl: result.audio, minimaxSongId },
+          stages: {
+            ...stages,
+            minimaxAudioUrl: persisted.contentPath,
+            minimaxSongId,
+            minimaxAssetId: persisted.assetId,
+            minimaxOriginalUrl: result.audio,
+          },
           lastMusicBackend: "minimax",
           lastMusicModel: result.model,
           minimaxTraceId: result.traceId,
         },
         {
           stage: "minimaxAudioUrl",
-          output: result.audio,
+          output: persisted.contentPath,
           at: new Date().toISOString(),
           actorType: dispatchActor.actorType,
           actorId: dispatchActor.actorId,
@@ -1254,7 +1274,7 @@ export function sunoPipelineRoutes(db: Db) {
       const [row] = await db
         .update(sunoIssues)
         .set({
-          minimaxAudioUrl: result.audio,
+          minimaxAudioUrl: persisted.contentPath,
           minimaxSongId,
           minimaxStatus: result.baseStatusCode,
           metadata: nextMeta,
@@ -1312,20 +1332,212 @@ export function sunoPipelineRoutes(db: Db) {
         );
       }
 
+      const dispatchActor = getActorInfo(req);
+
       let result: Awaited<ReturnType<typeof generateViaSuno>>;
       try {
         result = await generateViaSuno(prompt);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw unprocessable(msg);
+      } catch (sunoErr) {
+        // Suno failed (CDP unreachable, click failed, generation timed out,
+        // CDN never became ready). Fall back to MiniMax music-2.6 with the
+        // same prompt — same behavior as auto-run.
+        await logActivity(db, {
+          companyId: body.companyId,
+          actorType: dispatchActor.actorType,
+          actorId: dispatchActor.actorId,
+          agentId: dispatchActor.agentId,
+          runId: dispatchActor.runId,
+          action: "suno_issue.suno_dispatch_failed",
+          entityType: "suno_issue",
+          entityId: existing.id,
+          details: {
+            backend: "suno",
+            error: sunoErr instanceof Error ? sunoErr.message : String(sunoErr),
+          },
+        });
+
+        const chakraKey = (existing.targetChakra ?? null) as ChakraKey | null;
+        const fbPrompt = buildMiniMaxPrompt(prompt, chakraKey, null);
+        try {
+          const fb = await generateMinimaxMusic({
+            model: MINIMAX_MUSIC_MODELS.free,
+            prompt: fbPrompt,
+            lyrics: typeof stages.lyrics === "string" ? (stages.lyrics as string) : "",
+            outputUrl: true,
+            isInstrumental: true,
+            audioSetting: { sampleRate: 44100, bitrate: 256000, format: "mp3" },
+            context: { db, companyId: body.companyId, sunoIssueId: existing.id },
+          });
+          if (!fb.isUrl) {
+            throw new Error("MiniMax fallback returned hex audio; expected URL");
+          }
+          const fbPersisted = await persistMinimaxAudio({
+            db,
+            companyId: body.companyId,
+            audioUrl: fb.audio,
+            traceId: fb.traceId,
+            agentId: dispatchActor.agentId,
+            userId: dispatchActor.actorType === "user" ? dispatchActor.actorId : null,
+          });
+          const fbSongId = fb.traceId
+            ? `minimax:${fb.traceId}`
+            : `minimax:${Date.now()}`;
+          const nextMetaFb = appendHistory(
+            {
+              ...meta,
+              stages: {
+                ...stages,
+                minimaxAudioUrl: fbPersisted.contentPath,
+                minimaxSongId: fbSongId,
+                minimaxAssetId: fbPersisted.assetId,
+                minimaxOriginalUrl: fb.audio,
+              },
+              lastMusicBackend: "minimax",
+              lastMusicModel: fb.model,
+              minimaxTraceId: fb.traceId,
+              sunoFallbackToMinimax: true,
+              sunoDispatchPending: false,
+            },
+            {
+              stage: "minimaxAudioUrl",
+              output: fbPersisted.contentPath,
+              at: new Date().toISOString(),
+              actorType: dispatchActor.actorType,
+              actorId: dispatchActor.actorId,
+              agentId: dispatchActor.agentId,
+              agentName: "Raziel/MiniMax (Suno fallback)",
+              status: existing.status as SunoStatus,
+            },
+          );
+          const [fbRow] = await db
+            .update(sunoIssues)
+            .set({
+              minimaxAudioUrl: fbPersisted.contentPath,
+              minimaxSongId: fbSongId,
+              minimaxStatus: fb.baseStatusCode,
+              metadata: nextMetaFb,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (!fbRow) throw notFound("Suno issue not found");
+
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: dispatchActor.actorType,
+            actorId: dispatchActor.actorId,
+            agentId: dispatchActor.agentId,
+            runId: dispatchActor.runId,
+            action: "suno_issue.suno_fallback_minimax_generated",
+            entityType: "suno_issue",
+            entityId: fbRow.id,
+            details: {
+              backend: "minimax",
+              fallbackFor: "suno",
+              model: fb.model,
+              elapsedMs: fb.elapsedMs,
+              traceId: fb.traceId,
+            },
+          });
+
+          res.json(fbRow);
+          return;
+        } catch (fbErr) {
+          // Both backends failed — escalate to orchestrator BEFORE throwing
+          // so the issue moves to FAILED, the activity log carries an
+          // explicit ping, and live-event subscribers (orchestrator agents,
+          // dashboard) react in real time.
+          const msg = sunoErr instanceof Error ? sunoErr.message : String(sunoErr);
+          const fbMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+
+          const metaEsc = (existing.metadata ?? {}) as Record<string, unknown>;
+          const stagesEsc = (metaEsc.stages && typeof metaEsc.stages === "object"
+            ? (metaEsc.stages as Record<string, unknown>)
+            : {}) as Record<string, unknown>;
+          const escalationMeta = appendHistory(
+            {
+              ...metaEsc,
+              stages: stagesEsc,
+              escalation: {
+                at: new Date().toISOString(),
+                source: "dispatch-suno",
+                reason: "Suno + MiniMax both failed",
+                sunoError: msg,
+                minimaxError: fbMsg,
+                soundPrompt: prompt.slice(0, 500),
+              },
+              lastFailureReason: `Suno failed (${msg}); MiniMax fallback failed (${fbMsg})`,
+            },
+            {
+              stage: "fail",
+              output: `escalated: Suno+MiniMax both failed`,
+              at: new Date().toISOString(),
+              actorType: dispatchActor.actorType,
+              actorId: dispatchActor.actorId,
+              agentId: dispatchActor.agentId,
+              agentName: "Raziel (escalation)",
+              status: "FAILED" as SunoStatus,
+            },
+          );
+          const [escRow] = await db
+            .update(sunoIssues)
+            .set({
+              status: "FAILED",
+              metadata: escalationMeta,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (escRow) {
+            await syncLinkedIssueStatus(escRow, "FAILED");
+          }
+
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: dispatchActor.actorType,
+            actorId: dispatchActor.actorId,
+            agentId: dispatchActor.agentId,
+            runId: dispatchActor.runId,
+            action: "suno_issue.escalated_to_orchestrator",
+            entityType: "suno_issue",
+            entityId: existing.id,
+            details: {
+              source: "dispatch-suno",
+              reason: "Suno + MiniMax both failed",
+              sunoError: msg,
+              minimaxError: fbMsg,
+              needsOrchestratorAttention: true,
+            },
+          });
+
+          publishLiveEvent({
+            companyId: body.companyId,
+            type: "activity.logged",
+            payload: {
+              kind: "music_pipeline_escalation",
+              source: "dispatch-suno",
+              issueId: existing.id,
+              reason: "Suno + MiniMax both failed",
+              sunoError: msg,
+              minimaxError: fbMsg,
+              needsOrchestratorAttention: true,
+            },
+          });
+
+          throw unprocessable(`Suno failed: ${msg}. MiniMax fallback also failed: ${fbMsg}. Escalated to orchestrator.`);
+        }
       }
 
-      const dispatchActor = getActorInfo(req);
       const sunoSongId = result.songId;
       const nextMeta = appendHistory(
         {
           ...meta,
-          stages: { ...stages, audioUrl: result.audioUrl, sunoSongId },
+          stages: {
+            ...stages,
+            audioUrl: result.audioUrl,
+            sunoSongId,
+            sunoVariants: result.variants,
+          },
           lastMusicBackend: "suno",
           sunoDispatchPending: false,
         },
@@ -1367,6 +1579,7 @@ export function sunoPipelineRoutes(db: Db) {
           audioUrl: result.audioUrl,
           duration: result.duration,
           title: result.title,
+          variantCount: result.variants.length,
         },
       });
 
@@ -1778,18 +1991,34 @@ export function sunoPipelineRoutes(db: Db) {
         throw badRequest("MiniMax returned hex audio; expected URL");
       }
 
+      const musicActor = getActorInfo(req);
+      const persisted = await persistMinimaxAudio({
+        db,
+        companyId: body.companyId,
+        audioUrl: result.audio,
+        traceId: (result.extra?.["trace_id"] as string | null) ?? result.traceId,
+        agentId: musicActor.agentId,
+        userId: musicActor.actorType === "user" ? musicActor.actorId : null,
+      });
+
       // Deposit audioUrl + tag the song id so we can tell which path produced it.
       const sunoSongId = `minimax:${(result.extra?.["trace_id"] as string) ?? Date.now()}`;
-      const stageCache = { ...stages, audioUrl: result.audio, sunoSongId };
+      const stageCache = {
+        ...stages,
+        audioUrl: persisted.contentPath,
+        sunoSongId,
+        minimaxAssetId: persisted.assetId,
+        minimaxOriginalUrl: result.audio,
+      };
       const nextMeta = appendHistory(
         { ...meta, stages: stageCache, lastMusicBackend: "minimax", lastMusicModel: result.model },
         {
           stage: "audioUrl",
-          output: result.audio,
+          output: persisted.contentPath,
           at: new Date().toISOString(),
-          actorType: getActorInfo(req).actorType,
-          actorId: getActorInfo(req).actorId,
-          agentId: getActorInfo(req).agentId,
+          actorType: musicActor.actorType,
+          actorId: musicActor.actorId,
+          agentId: musicActor.agentId,
           agentName: "Raziel/MiniMax",
           status: issue.status as SunoStatus,
         },
@@ -1798,7 +2027,7 @@ export function sunoPipelineRoutes(db: Db) {
       const [row] = await db
         .update(sunoIssues)
         .set({
-          audioUrl: result.audio,
+          audioUrl: persisted.contentPath,
           sunoSongId,
           metadata: nextMeta,
           updatedAt: new Date(),
@@ -2208,8 +2437,22 @@ export function sunoPipelineRoutes(db: Db) {
           if (!result.isUrl) {
             throw new Error("MiniMax returned hex audio; expected URL");
           }
+          const persisted = await persistMinimaxAudio({
+            db,
+            companyId: body.companyId,
+            audioUrl: result.audio,
+            traceId: result.traceId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
           const minimaxSongId = result.traceId ? `minimax:${result.traceId}` : `minimax:${Date.now()}`;
-          const stageCache = { ...stages, minimaxAudioUrl: result.audio, minimaxSongId };
+          const stageCache = {
+            ...stages,
+            minimaxAudioUrl: persisted.contentPath,
+            minimaxSongId,
+            minimaxAssetId: persisted.assetId,
+            minimaxOriginalUrl: result.audio,
+          };
           const nextMeta = appendHistory(
             {
               ...meta,
@@ -2220,7 +2463,7 @@ export function sunoPipelineRoutes(db: Db) {
             },
             {
               stage: "minimaxAudioUrl",
-              output: result.audio,
+              output: persisted.contentPath,
               at: new Date().toISOString(),
               actorType: actor.actorType,
               actorId: actor.actorId,
@@ -2232,7 +2475,7 @@ export function sunoPipelineRoutes(db: Db) {
           const [updated] = await db
             .update(sunoIssues)
             .set({
-              minimaxAudioUrl: result.audio,
+              minimaxAudioUrl: persisted.contentPath,
               minimaxSongId,
               minimaxStatus: result.baseStatusCode,
               metadata: nextMeta,
@@ -2386,6 +2629,14 @@ export function sunoPipelineRoutes(db: Db) {
               if (!fb.isUrl) {
                 throw new Error("MiniMax fallback returned hex audio; expected URL");
               }
+              const fbPersisted = await persistMinimaxAudio({
+                db,
+                companyId: body.companyId,
+                audioUrl: fb.audio,
+                traceId: fb.traceId,
+                agentId: actor.agentId,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              });
               const fbSongId = fb.traceId
                 ? `minimax:${fb.traceId}`
                 : `minimax:${Date.now()}`;
@@ -2398,8 +2649,10 @@ export function sunoPipelineRoutes(db: Db) {
                   ...meta4,
                   stages: {
                     ...stages4,
-                    minimaxAudioUrl: fb.audio,
+                    minimaxAudioUrl: fbPersisted.contentPath,
                     minimaxSongId: fbSongId,
+                    minimaxAssetId: fbPersisted.assetId,
+                    minimaxOriginalUrl: fb.audio,
                   },
                   lastMusicBackend: "minimax",
                   lastMusicModel: fb.model,
@@ -2410,7 +2663,7 @@ export function sunoPipelineRoutes(db: Db) {
                 },
                 {
                   stage: "minimaxAudioUrl",
-                  output: fb.audio,
+                  output: fbPersisted.contentPath,
                   at: new Date().toISOString(),
                   actorType: actor.actorType,
                   actorId: actor.actorId,
@@ -2422,7 +2675,7 @@ export function sunoPipelineRoutes(db: Db) {
               const [fbUpdated] = await db
                 .update(sunoIssues)
                 .set({
-                  minimaxAudioUrl: fb.audio,
+                  minimaxAudioUrl: fbPersisted.contentPath,
                   minimaxSongId: fbSongId,
                   minimaxStatus: fb.baseStatusCode,
                   metadata: nextMeta4,
@@ -2454,8 +2707,14 @@ export function sunoPipelineRoutes(db: Db) {
                 },
               });
             } catch (fbErr) {
-              // Both Suno AND MiniMax fallback failed — issue stays in
-              // GENERATING with no audio. Operator must retry manually.
+              // Both Suno AND MiniMax fallback failed — escalate to the
+              // orchestrator: move issue to FAILED, write structured
+              // escalation metadata, log the orchestrator-ping activity,
+              // and broadcast a live event so any subscribed orchestrator
+              // (Claude session, dashboard, external listener) reacts.
+              const sunoErrMsg = err instanceof Error ? err.message : String(err);
+              const fbErrMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+
               await logActivity(db, {
                 companyId: body.companyId,
                 actorType: actor.actorType,
@@ -2468,7 +2727,84 @@ export function sunoPipelineRoutes(db: Db) {
                 details: {
                   backend: "minimax",
                   fallbackFor: "suno",
-                  error: fbErr instanceof Error ? fbErr.message : String(fbErr),
+                  error: fbErrMsg,
+                },
+              });
+
+              const metaEsc = (issue.metadata ?? {}) as Record<string, unknown>;
+              const stagesEsc = (metaEsc.stages && typeof metaEsc.stages === "object"
+                ? (metaEsc.stages as Record<string, unknown>)
+                : {}) as Record<string, unknown>;
+              const escalationMeta = appendHistory(
+                {
+                  ...metaEsc,
+                  stages: stagesEsc,
+                  escalation: {
+                    at: new Date().toISOString(),
+                    source: "auto-run",
+                    reason: "Suno + MiniMax both failed",
+                    sunoError: sunoErrMsg,
+                    minimaxError: fbErrMsg,
+                    soundPrompt: rawSoundPrompt.slice(0, 500),
+                  },
+                  lastFailureReason: `Suno failed (${sunoErrMsg}); MiniMax fallback failed (${fbErrMsg})`,
+                },
+                {
+                  stage: "fail",
+                  output: `escalated: Suno+MiniMax both failed`,
+                  at: new Date().toISOString(),
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  agentName: "Raziel (escalation)",
+                  status: "FAILED" as SunoStatus,
+                },
+              );
+              const [escRow] = await db
+                .update(sunoIssues)
+                .set({
+                  status: "FAILED",
+                  metadata: escalationMeta,
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)),
+                )
+                .returning();
+              if (escRow) {
+                issue = escRow;
+                await syncLinkedIssueStatus(escRow, "FAILED");
+              }
+
+              await logActivity(db, {
+                companyId: body.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "suno_issue.escalated_to_orchestrator",
+                entityType: "suno_issue",
+                entityId: issue.id,
+                details: {
+                  source: "auto-run",
+                  reason: "Suno + MiniMax both failed",
+                  sunoError: sunoErrMsg,
+                  minimaxError: fbErrMsg,
+                  needsOrchestratorAttention: true,
+                },
+              });
+
+              publishLiveEvent({
+                companyId: body.companyId,
+                type: "activity.logged",
+                payload: {
+                  kind: "music_pipeline_escalation",
+                  source: "auto-run",
+                  issueId: issue.id,
+                  reason: "Suno + MiniMax both failed",
+                  sunoError: sunoErrMsg,
+                  minimaxError: fbErrMsg,
+                  needsOrchestratorAttention: true,
                 },
               });
             }

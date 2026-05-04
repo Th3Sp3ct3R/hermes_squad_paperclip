@@ -19,6 +19,8 @@
 import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logUsage } from "./usage-log.js";
+import { getStorageService } from "../storage/index.js";
+import { assetService } from "./assets.js";
 
 const MINIMAX_BASE = process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io";
 
@@ -239,5 +241,131 @@ export async function generateMinimaxMusic(
     extra: data?.extra_info ?? null,
     model,
     elapsedMs,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//   Audio persistence — download MiniMax's pre-signed Aliyun OSS URL and
+//   write it through paperclip's storage abstraction so the audio survives
+//   past the 24-hour OSS expiry. Without this, every MiniMax track in the
+//   DB becomes a dead link the next day.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PersistMinimaxAudioInput {
+  db: Db;
+  companyId: string;
+  /** The pre-signed Aliyun OSS URL returned by MiniMax. */
+  audioUrl: string;
+  /** MiniMax traceId, used for the asset filename when present. */
+  traceId: string | null;
+  /** Optional — agent that triggered the generation, for asset attribution. */
+  agentId?: string | null;
+  /** Optional — user that triggered the generation. */
+  userId?: string | null;
+  /**
+   * Bytes/asset namespace. Defaults to "music/minimax". Cover-art uses
+   * "assets/cover", lyrics use "assets/lyrics", etc.
+   */
+  namespace?: string;
+}
+
+export interface PersistMinimaxAudioResult {
+  /** The asset row ID — use this to query metadata later. */
+  assetId: string;
+  /**
+   * Permanent relative path served by /api/assets/:id/content. Stable across
+   * MiniMax URL expiry. This is what should be stored in
+   * suno_issues.minimax_audio_url instead of the raw Aliyun URL.
+   */
+  contentPath: string;
+  /** sha256 of the audio bytes — useful for dedupe. */
+  sha256: string;
+  /** Bytes downloaded. */
+  byteSize: number;
+  /** content-type as detected from the response (defaults to audio/mpeg). */
+  contentType: string;
+}
+
+/**
+ * Download the MiniMax-generated audio from its expiring Aliyun OSS URL and
+ * persist the bytes through paperclip's storage service. Inserts an `assets`
+ * row so the audio is queryable, deduplicated by sha256, and served via the
+ * standard `/api/assets/:id/content` endpoint.
+ *
+ * Throws if the audioUrl is unreachable or the storage write fails. Callers
+ * should treat this as best-effort during the 24h window — once the original
+ * URL expires, this function cannot recover the bytes.
+ */
+export async function persistMinimaxAudio(
+  input: PersistMinimaxAudioInput,
+): Promise<PersistMinimaxAudioResult> {
+  const start = Date.now();
+  // 1. Pull the bytes from MiniMax's CDN. Use a generous timeout — the
+  // Aliyun OSS pre-signed URLs typically respond within a second, but
+  // we keep slack for slow networks.
+  const res = await fetch(input.audioUrl, {
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `[minimax-persist] Failed to fetch audio from MiniMax CDN: ${res.status} ${res.statusText}`,
+    );
+  }
+  const contentType = res.headers.get("content-type") ?? "audio/mpeg";
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length === 0) {
+    throw new Error("[minimax-persist] MiniMax returned empty audio body");
+  }
+
+  // 2. Build a deterministic original filename so the asset is recognizable
+  // in lists / downloads. Falls back to a timestamp when no traceId.
+  const safeTrace = input.traceId
+    ? input.traceId.replace(/[^a-zA-Z0-9_-]/g, "")
+    : `t${Date.now()}`;
+  const originalFilename = `minimax-${safeTrace}.mp3`;
+
+  // 3. Write through paperclip's storage abstraction. Returns provider/key/
+  // sha256/byteSize. Local-disk provider writes under the company's bucket;
+  // S3/Supabase providers write to their respective buckets.
+  const storage = getStorageService();
+  const stored = await storage.putFile({
+    companyId: input.companyId,
+    namespace: input.namespace ?? "music/minimax",
+    originalFilename,
+    contentType,
+    body: buf,
+  });
+
+  // 4. Register the asset in the DB so it has a permanent ID and is served
+  // via /api/assets/:id/content.
+  const asset = await assetService(input.db).create(input.companyId, {
+    provider: stored.provider,
+    objectKey: stored.objectKey,
+    contentType: stored.contentType,
+    byteSize: stored.byteSize,
+    sha256: stored.sha256,
+    originalFilename: stored.originalFilename,
+    createdByAgentId: input.agentId ?? null,
+    createdByUserId: input.userId ?? null,
+  });
+
+  logger.info(
+    {
+      assetId: asset.id,
+      sha256: stored.sha256,
+      byteSize: stored.byteSize,
+      contentType,
+      elapsedMs: Date.now() - start,
+      traceId: input.traceId,
+    },
+    "[minimax-persist] Audio persisted to paperclip storage",
+  );
+
+  return {
+    assetId: asset.id,
+    contentPath: `/api/assets/${asset.id}/content`,
+    sha256: stored.sha256,
+    byteSize: stored.byteSize,
+    contentType,
   };
 }
