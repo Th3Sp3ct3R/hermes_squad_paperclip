@@ -9,14 +9,15 @@ import { useDialog } from "@/context/DialogContext";
 //   The Intentions  — stated ends
 //   The Operations  — multi-step works
 //   Musica Universalis — the music of the spheres
+// Top nav holds only the headline destinations. The Workings (Issues),
+// The Intentions (Goals), and The Operations (Projects) live in the
+// command palette / left sidebar so the top bar stays focused on the
+// Hermes Squad's vertical (Dashboard \u2192 Agents \u2192 Music \u2192 Path).
 const NAV_LINKS = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/agents", label: "Agents" },
-  { to: "/issues", label: "The Workings" },
-  { to: "/goals", label: "The Intentions" },
-  { to: "/projects", label: "The Operations" },
-  { to: "/suno", label: "Musica Universalis" },
-  { to: "/initiate", label: "The Initiate's Path" },
+  { to: "/suno", label: "Musica Universalis", title: "The soul, descending into incarnation, acquires the qualities of each sphere; ascending in gnosis, it surrenders them and returns to source. \u2014 Discourse on the Eighth and Ninth" },
+  { to: "/initiate", label: "The Initiate\u2019s Path" },
   { to: "/activity", label: "Activity" },
   { to: "/costs", label: "Costs" },
 ] as const;
@@ -49,28 +50,28 @@ export function TopBar() {
         </svg>
       </div>
 
-      {/* Title — hermes/workspace, lower-case slash format */}
-      <div className="text-[15px] font-semibold tracking-[-0.01em] shrink-0 lowercase">
-        {selectedCompany?.name ? selectedCompany.name.toLowerCase() : "hermes"}
-        <span className="text-[#a1a1a1] font-normal">/workspace</span>
+      {/* Title */}
+      <div className="text-[15px] font-semibold tracking-[-0.01em] shrink-0">
+        The Hermetic Orchestra
       </div>
 
       {/* Nav links */}
       <nav className="flex gap-1 ml-4.5">
-        {NAV_LINKS.map(({ to, label }) => (
+        {NAV_LINKS.map((link) => (
           <NavLink
-            key={to}
-            to={to}
+            key={link.to}
+            to={link.to}
+            title={"title" in link ? (link as { title: string }).title : undefined}
             className={({ isActive }) =>
               cn(
-                "px-3 py-1.5 rounded-full text-[13px] transition-colors",
+                "px-3 py-1.5 rounded-full text-[13px] transition-colors whitespace-nowrap",
                 isActive
                   ? "bg-[#1f1f1f] text-[#ededed]"
                   : "text-[#a1a1a1] hover:text-[#ededed]",
               )
             }
           >
-            {label}
+            {link.label}
           </NavLink>
         ))}
       </nav>
