@@ -12,7 +12,9 @@
  *   OPENROUTER_REFERER      — request attribution (defaults to paperclip.ing)
  *   OPENROUTER_APP_TITLE    — request attribution (defaults to "Paperclip Suno Pipeline")
  */
+import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { logUsage } from "./usage-log.js";
 import {
   buildUrielSystemPrompt,
   buildZadkielSystemPrompt,
@@ -58,6 +60,17 @@ export interface OpenRouterCallOpts {
    * making a doomed request. Defaults to true.
    */
   requireKey?: boolean;
+  /**
+   * Optional context for usage tracking. When provided (with db + companyId),
+   * the call will fire-and-forget a usage log entry after completion.
+   */
+  context?: {
+    db?: Db;
+    companyId?: string;
+    stage?: string;
+    sunoIssueId?: string;
+    agentId?: string;
+  };
 }
 
 export interface SunoLlmContext {
@@ -122,7 +135,12 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
 
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+    };
   };
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== "string" || content.length === 0) {
@@ -130,11 +148,32 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
   }
 
   const elapsedMs = Date.now() - startedAt;
-  const promptTokens = data.usage?.prompt_tokens ?? "?";
-  const completionTokens = data.usage?.completion_tokens ?? "?";
+  const usage = data.usage;
+  const promptTokens = usage?.prompt_tokens ?? "?";
+  const completionTokens = usage?.completion_tokens ?? "?";
   logger.info(
     `[suno-llm] call complete model=${model} elapsedMs=${elapsedMs} promptTokens=${promptTokens} completionTokens=${completionTokens}`,
   );
+
+  // Fire-and-forget usage logging when context is provided
+  if (opts.context?.db && opts.context?.companyId) {
+    logUsage(opts.context.db, {
+      companyId: opts.context.companyId,
+      provider: "openrouter",
+      model,
+      callType: "llm",
+      stage: opts.context.stage,
+      sunoIssueId: opts.context.sunoIssueId,
+      agentId: opts.context.agentId,
+      tokensIn: typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : 0,
+      tokensOut: typeof usage?.completion_tokens === "number" ? usage.completion_tokens : 0,
+      tokensCached: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      tokensTotal: typeof usage?.total_tokens === "number" ? usage.total_tokens : 0,
+      durationMs: elapsedMs,
+      statusCode: 200,
+      success: true,
+    }).catch(() => {});
+  }
 
   return content.trim();
 }

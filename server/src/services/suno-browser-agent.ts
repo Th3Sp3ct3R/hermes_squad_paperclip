@@ -16,9 +16,7 @@
  *   CDP_HOST — default "127.0.0.1"
  *   CDP_PORT — default 9222
  */
-import fs from "node:fs";
 import WebSocket from "ws";
-import path from "node:path";
 import { logger } from "../middleware/logger.js";
 
 const DEFAULT_CDP_HOST = process.env.CDP_HOST || "127.0.0.1";
@@ -34,14 +32,22 @@ export interface CDPConfig {
 
 export interface SunoFormData {
   soundPrompt: string;
-  lyrics: string;
+}
+
+export interface SunoVariant {
+  songId: string;
+  audioUrl: string;
+  title: string;
 }
 
 export interface SunoResult {
+  /** Primary variant (first one Suno generated). DB writes use these. */
   songId: string;
   audioUrl: string;
   title: string;
   duration: number;
+  /** All variants Suno produced for this submission (typically 2). */
+  variants: SunoVariant[];
   screenshotPath?: string;
 }
 
@@ -123,26 +129,42 @@ export class SunoBrowserAgent {
   async fillForm(data: SunoFormData): Promise<void> {
     const tab = this.requireTab();
 
-    const promptSelector = `[data-testid="prompt-input"], textarea[placeholder*="prompt" i], textarea[placeholder*="style" i], input[placeholder*="prompt" i]`;
-    const lyricsSelector = `[data-testid="lyrics-input"], textarea[placeholder*="lyrics" i], textarea[placeholder*="custom" i]`;
-
+    // Simple-mode: type the sound prompt into the song-description textarea.
+    // We deliberately do NOT touch the lyrics field — leaving it blank tells
+    // Suno to generate an instrumental (per the field's own placeholder copy).
     const fillScript = `
       (function() {
-        const promptEl = document.querySelector('${promptSelector}') || document.querySelector('textarea');
-        const lyricsEl = document.querySelectorAll('${lyricsSelector}')[1] || document.querySelectorAll('textarea')[1];
+        const all = Array.from(document.querySelectorAll('textarea'));
+        const visible = all.filter(ta => {
+          const r = ta.getBoundingClientRect();
+          const cs = window.getComputedStyle(ta);
+          return r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+        });
 
-        if (!promptEl) return { error: "prompt field not found", selectors: "${promptSelector}" };
-        if (!lyricsEl) return { error: "lyrics field not found", selectors: "${lyricsSelector}" };
+        // Prefer the description field by placeholder; fall back to the last
+        // visible textarea (which is where the description sits in Simple mode).
+        const promptEl =
+          visible.find(ta => /describe the sound|song description|what kind of song|song about/i.test(ta.placeholder || '')) ||
+          visible[visible.length - 1] ||
+          all[0];
 
-        promptEl.value = ${JSON.stringify(data.soundPrompt)};
+        if (!promptEl) return { error: "no textarea found on page", textareaCount: all.length };
+
+        // Use the native value setter so React's controlled-component layer picks it up.
+        const proto = window.HTMLTextAreaElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        promptEl.focus();
+        nativeSetter.call(promptEl, ${JSON.stringify(data.soundPrompt)});
         promptEl.dispatchEvent(new Event('input', { bubbles: true }));
         promptEl.dispatchEvent(new Event('change', { bubbles: true }));
 
-        lyricsEl.value = ${JSON.stringify(data.lyrics)};
-        lyricsEl.dispatchEvent(new Event('input', { bubbles: true }));
-        lyricsEl.dispatchEvent(new Event('change', { bubbles: true }));
-
-        return { success: true, promptFilled: promptEl.value.length, lyricsFilled: lyricsEl.value.length };
+        return {
+          success: true,
+          promptFilled: promptEl.value.length,
+          placeholder: promptEl.placeholder,
+          textareaCount: all.length,
+          visibleCount: visible.length,
+        };
       })()
     `;
 
@@ -150,9 +172,7 @@ export class SunoBrowserAgent {
     logger.info({ result }, "[Raziel] Form fill result");
 
     if (result.error) {
-      throw new Error(
-        `[Raziel] Form fill failed: ${result.error}. Selectors tried: ${result.selectors}`,
-      );
+      throw new Error(`[Raziel] Form fill failed: ${result.error}`);
     }
   }
 
@@ -180,128 +200,173 @@ export class SunoBrowserAgent {
     }
   }
 
-  async pollForCompletion(
-    timeoutMs: number = 120000,
-  ): Promise<{ completed: boolean; audioSrc: string; screenshotPath?: string }> {
+  /**
+   * Read every song-link ID currently in the DOM. Used to snapshot before
+   * clicking Create so we can diff for new submissions afterward.
+   */
+  async snapshotSongIds(): Promise<Set<string>> {
     const tab = this.requireTab();
-    const start = Date.now();
-    const interval = 10000;
-    const screenshotDir = path.join(process.cwd(), "tmp", "suno-polls");
-    fs.mkdirSync(screenshotDir, { recursive: true });
-
-    let lastScreenshot = "";
-
-    while (Date.now() - start < timeoutMs) {
-      await this.sleep(interval);
-
-      const timestamp = Date.now();
-      const screenshotPath = path.join(screenshotDir, `poll-${timestamp}.png`);
-      lastScreenshot = screenshotPath;
-
-      try {
-        await this.screenshotTab(tab, screenshotPath);
-      } catch (_e) {
-        // screenshot may fail during navigation, continue polling
-      }
-
-      const checkScript = `
-        (function() {
-          const audio = document.querySelector('audio');
-          const hasAudio = !!audio && audio.src && audio.src.length > 0;
-
-          const title = document.title;
-          const url = window.location.href;
-
-          const successMarkers = document.querySelectorAll('[data-testid="success"], .success, .completed');
-          const hasSuccess = successMarkers.length > 0;
-
-          const errorMarkers = document.querySelectorAll('[data-testid="error"], .error');
-          const hasError = errorMarkers.length > 0;
-
-          return { hasAudio, audioSrc: audio?.src || null, title, url, hasSuccess, hasError };
-        })()
-      `;
-
-      const status = await this.evaluateOnTab(tab, checkScript);
-      logger.info(
-        {
-          elapsed: Math.round((Date.now() - start) / 1000) + "s",
-          hasAudio: status.hasAudio,
-          hasSuccess: status.hasSuccess,
-          hasError: status.hasError,
-          title: status.title,
-        },
-        "[Raziel] Poll status",
-      );
-
-      if (status.hasError) {
-        throw new Error("[Raziel] Suno generation error detected on page");
-      }
-
-      if (status.hasAudio && status.audioSrc) {
-        logger.info("[Raziel] Audio detected! Completing.");
-        return {
-          completed: true,
-          audioSrc: status.audioSrc as string,
-          screenshotPath: lastScreenshot,
-        };
-      }
-    }
-
-    throw new Error(`[Raziel] Generation timed out after ${timeoutMs}ms`);
+    const raw = await this.evaluateOnTab(
+      tab,
+      `JSON.stringify(Array.from(document.querySelectorAll('a[href*="/song/"]'))
+        .map(a => a.href.match(/\\/song\\/([a-zA-Z0-9-]+)/)?.[1])
+        .filter(Boolean))`,
+    );
+    const list = this.unwrapJson<string[]>(raw, []);
+    return new Set(list);
   }
 
-  async extractResult(): Promise<SunoResult> {
+  /**
+   * Poll the create page for new song-link IDs that weren't present before
+   * the Create click. Suno typically shows new entries within 5–10s.
+   * Returns as soon as ≥`minNew` new IDs appear (default 2 — Suno's
+   * standard variant count).
+   */
+  async pollForNewSongs(
+    beforeIds: Set<string>,
+    {
+      timeoutMs = 120_000,
+      intervalMs = 3_000,
+      minNew = 2,
+    }: { timeoutMs?: number; intervalMs?: number; minNew?: number } = {},
+  ): Promise<SunoVariant[]> {
     const tab = this.requireTab();
+    const start = Date.now();
 
-    const extractScript = `
-      (function() {
-        const audio = document.querySelector('audio');
-        const audioUrl = audio?.src || null;
+    while (Date.now() - start < timeoutMs) {
+      await this.sleep(intervalMs);
 
-        const url = window.location.href;
-        const songId = url.match(/song\\/([a-zA-Z0-9-_]+)/)?.[1] ||
-                       url.match(/([a-zA-Z0-9]{8,})/)?.[0] ||
-                       null;
-
-        const title = document.title;
-
-        const durationEl = document.querySelector('[data-testid="duration"]') ||
-                           document.querySelector('.duration');
-        const durationText = durationEl?.textContent || "";
-        const durationMatch = durationText.match(/(\\d+):(\\d+)/);
-        const duration = durationMatch ? parseInt(durationMatch[1]) * 60 + parseInt(durationMatch[2]) : 0;
-
-        return { audioUrl, songId, title, duration, url };
-      })()
-    `;
-
-    const raw = await this.evaluateOnTab(tab, extractScript);
-    logger.info({ raw }, "[Raziel] Extraction result");
-
-    if (!raw.audioUrl || !raw.songId) {
-      throw new Error(
-        `[Raziel] Failed to extract song result. audioUrl=${raw.audioUrl}, songId=${raw.songId}`,
+      const raw = await this.evaluateOnTab(
+        tab,
+        `
+          JSON.stringify((function() {
+            const seen = new Set();
+            const out = [];
+            for (const a of document.querySelectorAll('a[href*="/song/"]')) {
+              const m = a.href.match(/\\/song\\/([a-zA-Z0-9-]+)/);
+              if (!m) continue;
+              const id = m[1];
+              if (seen.has(id)) continue;
+              seen.add(id);
+              const row = a.closest('[class*="row"], [class*="card"], [class*="item"], li, tr, article');
+              const titleEl = row?.querySelector('[class*="title"], h1, h2, h3, h4');
+              out.push({ songId: id, title: (titleEl?.textContent || a.textContent || '').trim().slice(0, 120) });
+            }
+            return out;
+          })())
+        `,
       );
+
+      const songs = this.unwrapJson<Array<{ songId: string; title: string }>>(
+        raw,
+        [],
+      );
+      const fresh = songs.filter((s) => !beforeIds.has(s.songId));
+
+      logger.info(
+        {
+          elapsed: `${Math.round((Date.now() - start) / 1000)}s`,
+          newSongCount: fresh.length,
+        },
+        "[Raziel] Poll for new songs",
+      );
+
+      if (fresh.length >= minNew) {
+        return fresh.map((s) => ({
+          songId: s.songId,
+          title: s.title,
+          audioUrl: `https://cdn1.suno.ai/${s.songId}.mp3`,
+        }));
+      }
     }
 
-    return {
-      songId: raw.songId as string,
-      audioUrl: raw.audioUrl as string,
-      title: (raw.title as string) ?? "",
-      duration: (raw.duration as number) ?? 0,
-    };
+    throw new Error(
+      `[Raziel] No new songs detected after ${timeoutMs}ms (expected ≥${minNew})`,
+    );
+  }
+
+  /**
+   * Verify a Suno CDN audio URL is reachable. Suno encodes asynchronously —
+   * the song link appears in DOM before the MP3 is fully ready on the CDN,
+   * so we retry with backoff.
+   */
+  async verifyAudioUrl(
+    url: string,
+    { timeoutMs = 120_000, intervalMs = 5_000 }: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<{ ready: true; sizeBytes: number; contentType: string } | { ready: false; lastStatus: number | string }> {
+    const start = Date.now();
+    let lastStatus: number | string = "no attempt";
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const res = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(10_000) });
+        lastStatus = res.status;
+        if (res.ok) {
+          const ct = res.headers.get("content-type") ?? "";
+          if (ct.startsWith("audio/")) {
+            return {
+              ready: true,
+              sizeBytes: Number(res.headers.get("content-length")) || 0,
+              contentType: ct,
+            };
+          }
+        }
+      } catch (err) {
+        lastStatus = err instanceof Error ? err.message : String(err);
+      }
+      logger.info(
+        { url, lastStatus, elapsed: `${Math.round((Date.now() - start) / 1000)}s` },
+        "[Raziel] Audio CDN not yet ready, retrying",
+      );
+      await this.sleep(intervalMs);
+    }
+    return { ready: false, lastStatus };
   }
 
   async runFullPipeline(data: SunoFormData): Promise<SunoResult> {
     logger.info("[Raziel] === Starting Suno generation pipeline ===");
     await this.connect();
     await this.navigateToSuno();
+
+    // Snapshot the existing song-link IDs BEFORE clicking Create so we can
+    // detect the freshly-generated ones afterward. Suno doesn't put the
+    // generated audio onto the /create page — it only inserts new song-row
+    // links, and the actual audio is served from cdn1.suno.ai/<id>.mp3.
     await this.fillForm(data);
+    const beforeIds = await this.snapshotSongIds();
+    logger.info({ existingSongs: beforeIds.size }, "[Raziel] Snapshot before Create click");
+
     await this.clickGenerate();
-    const pollResult = await this.pollForCompletion();
-    const result = await this.extractResult();
-    return { ...result, screenshotPath: pollResult.screenshotPath };
+
+    // Wait for Suno to insert the new song-row links into the DOM.
+    const variants = await this.pollForNewSongs(beforeIds);
+    logger.info(
+      { count: variants.length, ids: variants.map((v) => v.songId) },
+      "[Raziel] New song variants detected",
+    );
+
+    // Verify the CDN URL for the primary variant is actually reachable.
+    // Suno encodes asynchronously, so the song-link can appear before the
+    // MP3 finishes uploading. We block on the first variant only — once
+    // it's ready, the second is virtually always ready too.
+    const primary = variants[0];
+    const probe = await this.verifyAudioUrl(primary.audioUrl);
+    if (!probe.ready) {
+      throw new Error(
+        `[Raziel] Primary variant CDN URL never became ready: ${primary.audioUrl} (last=${probe.lastStatus})`,
+      );
+    }
+    logger.info(
+      { url: primary.audioUrl, sizeBytes: probe.sizeBytes, contentType: probe.contentType },
+      "[Raziel] Primary audio CDN ready",
+    );
+
+    return {
+      songId: primary.songId,
+      audioUrl: primary.audioUrl,
+      title: primary.title,
+      duration: 0,
+      variants,
+    };
   }
 
   // ——— CDP primitives ———
@@ -403,19 +468,23 @@ export class SunoBrowserAgent {
     });
   }
 
-  private async screenshotTab(
-    tabId: string,
-    outputPath: string,
-  ): Promise<void> {
-    const screenshotUrl = `http://${this.config.host}:${this.config.port}/json/screenshot/${tabId}`;
-    const dir = path.dirname(outputPath);
-    fs.mkdirSync(dir, { recursive: true });
-
-    const res = await fetch(screenshotUrl, {
-      signal: AbortSignal.timeout(15000),
-    });
-    const buffer = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(outputPath, buffer);
+  /**
+   * evaluateOnTab returns either a parsed object (when the page returns one
+   * directly) or `{ value: <stringified-json> }` when the page returns a
+   * JSON string. This unwraps both shapes.
+   */
+  private unwrapJson<T>(raw: Record<string, unknown>, fallback: T): T {
+    if (typeof raw.value === "string") {
+      try {
+        return JSON.parse(raw.value) as T;
+      } catch {
+        return fallback;
+      }
+    }
+    if (raw && typeof raw === "object" && !("value" in raw)) {
+      return raw as unknown as T;
+    }
+    return fallback;
   }
 
   private requireTab(): string {
@@ -440,21 +509,15 @@ export class SunoBrowserAgent {
  * Creates a SunoBrowserAgent, runs the full pipeline, and returns the result.
  * Handles errors gracefully and logs them via the Paperclip logger.
  */
-export async function generateViaSuno(
-  prompt: string,
-  lyrics: string,
-): Promise<SunoResult> {
+export async function generateViaSuno(prompt: string): Promise<SunoResult> {
   logger.info(
-    { promptLength: prompt.length, lyricsLength: lyrics.length },
+    { promptLength: prompt.length },
     "[Raziel] generateViaSuno — starting browser automation",
   );
 
   const agent = new SunoBrowserAgent();
   try {
-    const result = await agent.runFullPipeline({
-      soundPrompt: prompt,
-      lyrics,
-    });
+    const result = await agent.runFullPipeline({ soundPrompt: prompt });
     logger.info(
       {
         songId: result.songId,

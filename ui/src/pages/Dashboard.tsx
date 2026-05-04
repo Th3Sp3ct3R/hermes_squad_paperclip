@@ -7,6 +7,7 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
+import { usageStatsApi } from "../api/usageStats";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -210,6 +211,50 @@ function AgentActivityFeed({ agents, runs }: { agents?: Agent[]; runs?: { agentI
   );
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function UsageSparkline({ byDay }: { byDay: { date: string; tokens: number; calls: number }[] }) {
+  const maxTokens = Math.max(...byDay.map((d) => d.tokens), 1);
+  const width = byDay.length * 10;
+  const points = byDay
+    .map((d, i) => `${i * 10},${100 - (d.tokens / maxTokens) * 90}`)
+    .join(" ");
+  const areaPoints = `0,100 ${points} ${(byDay.length - 1) * 10},100`;
+
+  return (
+    <div className="h-32 w-full">
+      <svg
+        viewBox={`0 0 ${width} 100`}
+        className="w-full h-full"
+        preserveAspectRatio="none"
+      >
+        <polygon
+          fill="currentColor"
+          className="text-primary/10"
+          points={areaPoints}
+        />
+        <polyline
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          className="text-primary"
+          points={points}
+        />
+      </svg>
+      <div className="flex justify-between mt-1 text-[9px] text-muted-foreground">
+        <span>{byDay[0]?.date?.slice(5)}</span>
+        <span>{byDay[byDay.length - 1]?.date?.slice(5)}</span>
+      </div>
+    </div>
+  );
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export function Dashboard() {
@@ -258,6 +303,12 @@ export function Dashboard() {
   const { data: runs } = useQuery({
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: usageStats } = useQuery({
+    queryKey: queryKeys.usageStats(selectedCompanyId!, 30),
+    queryFn: () => usageStatsApi.get(selectedCompanyId!, 30),
     enabled: !!selectedCompanyId,
   });
 
@@ -408,17 +459,17 @@ export function Dashboard() {
             </div>
             <div className="rounded-lg border border-border/40 bg-card/50 px-4 py-3">
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Tokens Used</span>
-              <div className="text-2xl font-bold tabular-nums">0</div>
+              <div className="text-2xl font-bold tabular-nums">{formatNumber(usageStats?.totalTokens ?? 0)}</div>
             </div>
             <div className="rounded-lg border border-border/40 bg-card/50 px-4 py-3">
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground">API Calls</span>
-              <div className="text-2xl font-bold tabular-nums">0</div>
+              <div className="text-2xl font-bold tabular-nums">{usageStats?.totalCalls ?? 0}</div>
             </div>
             <div className="rounded-lg border border-border/40 bg-card/50 px-4 py-3">
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Active Model</span>
               <div className="mt-1">
                 <span className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                  minimax/minimax-m2.5:free
+                  {usageStats?.byModel?.[0]?.model ?? "minimax/minimax-m2.5:free"}
                 </span>
               </div>
             </div>
@@ -438,27 +489,38 @@ export function Dashboard() {
                   ))}
                 </div>
               </div>
-              <div className="h-32 flex items-center justify-center text-sm text-muted-foreground">
-                No usage data yet
-              </div>
+              {usageStats && usageStats.byDay.length > 0 ? (
+                <UsageSparkline byDay={usageStats.byDay} />
+              ) : (
+                <div className="h-32 flex items-center justify-center text-sm text-muted-foreground">
+                  No usage data yet
+                </div>
+              )}
             </div>
 
             {/* Top Models — 1/3 width */}
             <div className="rounded-lg border border-border/40 bg-card/30 p-4">
               <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">Top Models</h3>
               <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>minimax/minimax-m2.5:free</span>
-                  <span className="text-muted-foreground">&mdash;</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground/70">via OpenRouter</span>
-                  <span className="text-[10px] text-muted-foreground">LLM router</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span>music-2.6-free</span>
-                  <span className="text-[10px] text-muted-foreground">MiniMax direct</span>
-                </div>
+                {usageStats && usageStats.byModel.length > 0 ? (
+                  usageStats.byModel.slice(0, 5).map((m) => (
+                    <div key={m.model} className="flex justify-between text-sm">
+                      <span className="truncate mr-2">{m.model}</span>
+                      <span className="text-muted-foreground tabular-nums shrink-0">{m.calls} calls</span>
+                    </div>
+                  ))
+                ) : (
+                  <>
+                    <div className="flex justify-between text-sm">
+                      <span>minimax/minimax-m2.5:free</span>
+                      <span className="text-muted-foreground">&mdash;</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span>music-2.6-free</span>
+                      <span className="text-[10px] text-muted-foreground">MiniMax direct</span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -509,8 +571,17 @@ export function Dashboard() {
                   <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Cache Efficiency</h3>
                   <span className="text-[10px] text-muted-foreground">30D</span>
                 </div>
-                <div className="text-3xl font-bold tabular-nums">&mdash;</div>
-                <span className="text-xs text-muted-foreground">No cache data yet</span>
+                {usageStats && usageStats.totalCalls > 0 ? (
+                  <>
+                    <div className="text-3xl font-bold tabular-nums">{usageStats.cacheHitRate}%</div>
+                    <span className="text-xs text-muted-foreground">prompt token cache hit rate</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-3xl font-bold tabular-nums">&mdash;</div>
+                    <span className="text-xs text-muted-foreground">No cache data yet</span>
+                  </>
+                )}
               </div>
 
               {/* Agent Skills */}

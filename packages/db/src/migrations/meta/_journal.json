@@ -281,6 +281,13 @@
       "when": 1777763265795,
       "tag": "0039_round_mordo",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1777849600000,
+      "tag": "0040_usage_logs",
+      "breakpoints": true
     }
   ]
 }

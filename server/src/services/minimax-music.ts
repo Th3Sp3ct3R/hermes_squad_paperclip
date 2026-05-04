@@ -16,7 +16,9 @@
  * hex string) in the response body once generation completes. No polling
  * required, unlike Suno's feed/v3 cycle.
  */
+import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { logUsage } from "./usage-log.js";
 
 const MINIMAX_BASE = process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io";
 
@@ -53,6 +55,16 @@ export interface MinimaxMusicInput {
   lyricsOptimizer?: boolean;
   /** When true, generate an instrumental track (lyrics still influence mood). */
   isInstrumental?: boolean;
+  /**
+   * Optional context for usage tracking. When provided (with db + companyId),
+   * a usage log entry will be fired after successful generation.
+   */
+  context?: {
+    db?: Db;
+    companyId?: string;
+    sunoIssueId?: string;
+    agentId?: string;
+  };
 }
 
 export interface MinimaxMusicResult {
@@ -200,6 +212,23 @@ export async function generateMinimaxMusic(
   logger.info(
     `[minimax-music] generated model=${model} elapsedMs=${elapsedMs} dataStatus=${dataStatus} baseStatusCode=${baseStatusCode} outputFormat=${outputFormat} traceId=${traceId ?? "?"}`,
   );
+
+  // Fire-and-forget usage logging when context is provided
+  if (input.context?.db && input.context?.companyId) {
+    logUsage(input.context.db, {
+      companyId: input.context.companyId,
+      provider: "minimax",
+      model,
+      callType: "music",
+      stage: "musicGen",
+      sunoIssueId: input.context.sunoIssueId,
+      agentId: input.context.agentId,
+      durationMs: elapsedMs,
+      statusCode: baseStatusCode,
+      success: true,
+      metadata: { traceId },
+    }).catch(() => {});
+  }
 
   return {
     audio,

@@ -61,3 +61,4 @@ export {
   type SunoIssue,
   type NewSunoIssue,
 } from "./sunoIssues.js";
+export { usageLogs } from "./usage_logs.js";
