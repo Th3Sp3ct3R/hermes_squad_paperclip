@@ -82,7 +82,10 @@ export function MagnumOpusPanel({ sunoIssues }: MagnumOpusPanelProps) {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel g">
+        <h3
+          className="seclabel g"
+          title="Alchemical Great Work — Nigredo (DRAFT) → Albedo (GENERATING) → Citrinitas (REVIEW) → Rubedo (APPROVED) → Lapis (PUBLISHED, the philosopher's stone) → Solutio (FAILED). Songs grouped by alchemical stage."
+        >
           <CaduceusMark /> The Magnum Opus
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -170,7 +173,10 @@ export function SolveEtCoagulaPanel({ activity }: SolveEtCoagulaPanelProps) {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel r">
+        <h3
+          className="seclabel r"
+          title="Latin: 'dissolve and coagulate' — alchemical motto for break-down-and-rebuild work. Counts cycles where a song was rejected, reworked, then later approved. The real measure of system maturity."
+        >
           <CaduceusMark /> Solve et Coagula
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -231,7 +237,10 @@ export function EighthSpherePanel({ sunoIssues }: EighthSpherePanelProps) {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel w">
+        <h3
+          className="seclabel w"
+          title="Hermetic cosmology: seven planetary spheres + an eighth of fixed stars beyond Fate. Songs that broke through and shipped externally. ἕν τὸ πᾶν — 'one is all'."
+        >
           <CaduceusMark /> The Eighth Sphere
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -296,7 +305,10 @@ export function HermesErrandsPanel({ activity }: HermesErrandsPanelProps) {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel b">
+        <h3
+          className="seclabel b"
+          title="Hermes is the messenger god — boundaries crossed, errands run. Iliad 24.339: 'You delight most in being friend to a man.' Tool-call ledger for the current day."
+        >
           <CaduceusMark /> Hermes' Errands
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -353,7 +365,10 @@ export function OuroborosPanel({ runs, activity }: OuroborosPanelProps) {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel p">
+        <h3
+          className="seclabel p"
+          title="The snake biting its own tail — eternal return, the system that closes on itself. Retry loops, recursive depth, self-healing events. ἕν τὸ πᾶν."
+        >
           <CaduceusMark /> The Ouroboros
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">

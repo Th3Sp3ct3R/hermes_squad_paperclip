@@ -122,7 +122,10 @@ export function PlanetaryHourPanel() {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel g">
+        <h3
+          className="seclabel g"
+          title="Heptameron / Agrippa Bk II. Each calendar hour cycles through the Chaldean order: Saturn → Jupiter → Mars → Sun → Venus → Mercury → Moon. Day's first hour is the day-planet. Each planet maps to its archangel."
+        >
           <CaduceusMark /> The Planetary Hour
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -213,7 +216,10 @@ export function HeptachordPanel({ sunoIssues }: HeptachordPanelProps) {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel s">
+        <h3
+          className="seclabel s"
+          title="Hymn 4 — septem chordae mundi. Pythagorean / Orphic: the cosmos has seven strings, one per planet/chakra, each at its Solfeggio frequency (396 / 417 / 528 / 639 / 741 / 852 / 963 Hz). Strings light when songs ship in that band."
+        >
           <CaduceusMark /> The Heptachord
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -320,23 +326,35 @@ export function MonochordPanel({ sunoIssues }: MonochordPanelProps) {
     setPulseOn(false);
   }, [lastPublishMs]);
 
-  // The seven planetary proportions on Fludd's monochord — Saturn (top of
-  // string, longest) down to Moon (bottom, shortest). Positions are the
-  // traditional Pythagorean intervals scaled to vertical 0–100%.
-  const STOPS: Array<{ planet: Planet; pct: number }> = [
-    { planet: "Saturn",  pct: 0    }, // top of string
-    { planet: "Jupiter", pct: 14.3 },
-    { planet: "Mars",    pct: 28.6 },
-    { planet: "Sun",     pct: 50   }, // octave midpoint
-    { planet: "Venus",   pct: 64.3 },
-    { planet: "Mercury", pct: 78.6 },
-    { planet: "Moon",    pct: 100  }, // bottom
+  // Traditional Pythagorean monochord stops (Fludd 1617) — non-uniform, with
+  // the Sun at 1/2 (the mese, octave midpoint) and the other planets placed
+  // at clean rational fractions of the full string. Saturn at the top is the
+  // hypate (longest); Moon at the bottom approaches the octave.
+  //
+  //   Saturn  0/8 = 0%      (full string — hypate)
+  //   Jupiter 1/8 = 12.5%   (whole tone above)
+  //   Mars    2/8 = 25%     (perfect fourth)
+  //   Sun     4/8 = 50%     (octave midpoint — mese)
+  //   Venus   5/8 = 62.5%   (perfect fifth from above)
+  //   Mercury 6/8 = 75%     (minor sixth from above)
+  //   Moon    7/8 = 87.5%   (approaching octave — nete)
+  const STOPS: Array<{ planet: Planet; pct: number; ratio: string }> = [
+    { planet: "Saturn",  pct: 0,    ratio: "0/8" },
+    { planet: "Jupiter", pct: 12.5, ratio: "1/8" },
+    { planet: "Mars",    pct: 25,   ratio: "2/8" },
+    { planet: "Sun",     pct: 50,   ratio: "4/8 · mese" },
+    { planet: "Venus",   pct: 62.5, ratio: "5/8" },
+    { planet: "Mercury", pct: 75,   ratio: "6/8" },
+    { planet: "Moon",    pct: 87.5, ratio: "7/8" },
   ];
 
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel w">
+        <h3
+          className="seclabel w"
+          title="Robert Fludd, Utriusque Cosmi Historia (1617). Single string spanning the cosmic octave with seven planetary stops at Pythagorean ratios. Sandalphon's master output bus — pulses on each fresh PUBLISHED song."
+        >
           <CaduceusMark /> The Monochord
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -401,6 +419,12 @@ export function MonochordPanel({ sunoIssues }: MonochordPanelProps) {
               </span>
               <span className="font-mono text-[9px] uppercase tracking-wider text-[#6e6e6e]">
                 {s.planet}
+              </span>
+              <span
+                className="font-mono text-[9px] tracking-wider text-[#404040]"
+                title={`Pythagorean stop ${s.ratio}`}
+              >
+                {s.ratio}
               </span>
             </div>
           ))}

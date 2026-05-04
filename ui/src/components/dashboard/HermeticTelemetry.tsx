@@ -43,6 +43,48 @@ const ARCHANGELS: ArchangelName[] = [
   "Cassiel",
 ];
 
+/**
+ * Derive the responsible archangel from an activity action when the event
+ * doesn't have an explicit agentId set. The activity log records most events
+ * with actorType="user" because operations come through HTTP routes without
+ * a specific archangel context — but the action *names* tell us who would
+ * have done the work in the celestial division of labor.
+ *
+ * Returns null when the action isn't archangel-attributable (system events).
+ */
+function deriveResponsibleAgent(action: string): ArchangelName | null {
+  // Music-pipeline stages map cleanly to specific archangels
+  if (action.includes("lyrics")) return "Zadkiel";
+  if (action.includes("soundPrompt") || action.includes("sound_prompt")) return "Uriel";
+  if (action.includes("visualPrompt") || action.includes("visual_prompt") || action.includes("cover_art") || action.includes("coverArt")) return "Jophiel";
+  if (action.includes("releaseCopy") || action.includes("release_copy")) return "Gabriel";
+  if (action.includes("minimax") || action.includes("audioUrl") || action.includes("song_via")) return "Raziel";
+  if (action.includes("publish")) return "Sandalphon";
+  // State-machine moves
+  if (action.includes("approve") || action.includes("review_request") || action.includes("reject") || action.includes("canon")) return "Raphael";
+  if (action.includes("dispatch") || action.includes("assign") || action.includes("auto_run")) return "Michael";
+  if (action.includes("triage") || action.includes("failed_stale") || action.includes("expired")) return "Cassiel";
+  if (action.includes("linked_to_issue") || action.includes("backfilled")) return "Metatron";
+  if (action.includes("created") && action.includes("suno")) return "Michael";
+  return null;
+}
+
+/** Resolve an event's agent: explicit agentId first, otherwise derive from action. */
+function resolveAgent(
+  e: ActivityLike,
+  agentNameById: Map<string, string>,
+): ArchangelName | null {
+  // 1) Explicit agentId — take it if it maps to a known archangel name.
+  if (e.agentId) {
+    const name = agentNameById.get(e.agentId);
+    if (name && ARCHANGELS.includes(name as ArchangelName)) {
+      return name as ArchangelName;
+    }
+  }
+  // 2) Fallback: derive from action.
+  return deriveResponsibleAgent(e.action);
+}
+
 // ── 1. The Aspect Grid ────────────────────────────────────────────────────
 // Build a co-occurrence matrix from the activity log. Two agents are
 // "in conjunction" if they both touched the same entity in the recent past.
@@ -76,49 +118,56 @@ export function AspectGridPanel({
   const stats = useMemo(() => {
     const events = activity ?? [];
     const map = agentIdToName ?? new Map();
-    // Group events by entity
-    const byEntity = new Map<string, ActivityLike[]>();
-    for (const e of events) {
-      if (!e.entityId || !e.agentId) continue;
+
+    // Annotate each event with its resolved (or derived) archangel name.
+    type Annotated = ActivityLike & { agentName: ArchangelName | null };
+    const annotated: Annotated[] = events.map((e) => ({
+      ...e,
+      agentName: resolveAgent(e, map),
+    }));
+
+    // Group annotated events by entity.
+    const byEntity = new Map<string, Annotated[]>();
+    for (const e of annotated) {
+      if (!e.entityId || !e.agentName) continue;
       const k = `${e.entityType ?? ""}:${e.entityId}`;
       const arr = byEntity.get(k) ?? [];
       arr.push(e);
       byEntity.set(k, arr);
     }
-    // For every entity, every distinct pair of agents that touched it counts as 1 conjunction
+
+    // Every distinct pair of agents that touched the same entity = conjunction.
     const pairs = new Map<string, PairStat>();
     for (const [, evts] of byEntity) {
-      const seen = new Set<string>();
-      for (const e of evts) {
-        if (e.agentId) seen.add(e.agentId);
-      }
-      const ids = Array.from(seen);
-      for (let i = 0; i < ids.length; i++) {
-        for (let j = i + 1; j < ids.length; j++) {
-          const k = pairKey(ids[i]!, ids[j]!);
+      const seen = new Set<ArchangelName>();
+      for (const e of evts) seen.add(e.agentName!);
+      const names = Array.from(seen);
+      for (let i = 0; i < names.length; i++) {
+        for (let j = i + 1; j < names.length; j++) {
+          const k = pairKey(names[i]!, names[j]!);
           const s = pairs.get(k) ?? emptyStat();
           s.conjunction += 1;
           pairs.set(k, s);
         }
       }
-      // Opposition: a rejected event where another agent created the entity
+      // Opposition: rejection / failure events involving two distinct agents.
       const rejections = evts.filter((e) => e.action.includes("rejected") || e.action.includes("failed"));
       for (const rj of rejections) {
         for (const e of evts) {
-          if (e.agentId && rj.agentId && e.agentId !== rj.agentId) {
-            const k = pairKey(rj.agentId, e.agentId);
+          if (e.agentName && rj.agentName && e.agentName !== rj.agentName) {
+            const k = pairKey(rj.agentName, e.agentName);
             const s = pairs.get(k) ?? emptyStat();
             s.opposition += 1;
             pairs.set(k, s);
           }
         }
       }
-      // Trine: an approved/published action by one agent following work from another
-      const handoffs = evts.filter((e) => e.action.includes("approved") || e.action.includes("published") || e.action.includes("review_requested"));
+      // Trine: smooth handoffs (approve / publish / request-review).
+      const handoffs = evts.filter((e) => e.action.includes("approved") || e.action.includes("published") || e.action.includes("review_request"));
       for (const h of handoffs) {
         for (const e of evts) {
-          if (e.agentId && h.agentId && e.agentId !== h.agentId) {
-            const k = pairKey(h.agentId, e.agentId);
+          if (e.agentName && h.agentName && e.agentName !== h.agentName) {
+            const k = pairKey(h.agentName, e.agentName);
             const s = pairs.get(k) ?? emptyStat();
             s.trine += 1;
             pairs.set(k, s);
@@ -126,19 +175,17 @@ export function AspectGridPanel({
         }
       }
     }
-    // Convert to array of {a, b, ...stat} with names
-    const list: Array<{ aName: string; bName: string; stat: PairStat }> = [];
+
+    // Convert pairs map → sorted list. Names are already archangel-validated.
+    const list: Array<{ aName: ArchangelName; bName: ArchangelName; stat: PairStat }> = [];
     for (const [key, stat] of pairs) {
-      const [aId, bId] = key.split("|");
-      const aName = aId ? (map.get(aId) ?? null) : null;
-      const bName = bId ? (map.get(bId) ?? null) : null;
-      // Only surface pairs where both ends are archangels we know about.
-      if (
-        aName && bName &&
-        ARCHANGELS.includes(aName as ArchangelName) &&
-        ARCHANGELS.includes(bName as ArchangelName)
-      ) {
-        list.push({ aName, bName, stat });
+      const [a, b] = key.split("|");
+      if (a && b) {
+        list.push({
+          aName: a as ArchangelName,
+          bName: b as ArchangelName,
+          stat,
+        });
       }
     }
     list.sort(
@@ -154,7 +201,10 @@ export function AspectGridPanel({
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel p">
+        <h3
+          className="seclabel p"
+          title="Astrology applied to agent telemetry. Aspects derived from activity log co-occurrence on the same entity: ☌ conjunction (collaborated on the same song), ☍ opposition (rejection / disagreement), △ trine (smooth handoff)."
+        >
           <CaduceusMark /> The Aspect Grid
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
@@ -253,37 +303,36 @@ export function KerykeionPanel({ activity, agentIdToName }: KerykeionPanelProps)
     startOfToday.setHours(0, 0, 0, 0);
     const startMs = startOfToday.getTime();
 
-    let count = 0;
-    const byEntity = new Map<string, ActivityLike[]>();
+    type Annotated = ActivityLike & { agentName: ArchangelName | null };
+    const todayEvents: Annotated[] = [];
     for (const e of events) {
       const t = new Date(e.createdAt).getTime();
       if (t < startMs) continue;
-      count++;
-      if (!e.entityId || !e.agentId) continue;
+      todayEvents.push({ ...e, agentName: resolveAgent(e, map) });
+    }
+    const count = todayEvents.length;
+
+    const byEntity = new Map<string, Annotated[]>();
+    for (const e of todayEvents) {
+      if (!e.entityId || !e.agentName) continue;
       const k = `${e.entityType ?? ""}:${e.entityId}`;
       const arr = byEntity.get(k) ?? [];
       arr.push(e);
       byEntity.set(k, arr);
     }
 
-    const pairCounts = new Map<string, { aName: string; bName: string; n: number }>();
+    const pairCounts = new Map<
+      string,
+      { aName: ArchangelName; bName: ArchangelName; n: number }
+    >();
     for (const [, evts] of byEntity) {
-      const ids = Array.from(new Set(evts.map((e) => e.agentId).filter(Boolean) as string[]));
-      for (let i = 0; i < ids.length; i++) {
-        for (let j = i + 1; j < ids.length; j++) {
-          const k = pairKey(ids[i]!, ids[j]!);
-          const aName = map.get(ids[i]!) ?? null;
-          const bName = map.get(ids[j]!) ?? null;
-          if (
-            aName &&
-            bName &&
-            ARCHANGELS.includes(aName as ArchangelName) &&
-            ARCHANGELS.includes(bName as ArchangelName)
-          ) {
-            const cur = pairCounts.get(k) ?? { aName, bName, n: 0 };
-            cur.n += 1;
-            pairCounts.set(k, cur);
-          }
+      const names = Array.from(new Set(evts.map((e) => e.agentName).filter(Boolean) as ArchangelName[]));
+      for (let i = 0; i < names.length; i++) {
+        for (let j = i + 1; j < names.length; j++) {
+          const k = pairKey(names[i]!, names[j]!);
+          const cur = pairCounts.get(k) ?? { aName: names[i]!, bName: names[j]!, n: 0 };
+          cur.n += 1;
+          pairCounts.set(k, cur);
         }
       }
     }
@@ -304,7 +353,10 @@ export function KerykeionPanel({ activity, agentIdToName }: KerykeionPanelProps)
   return (
     <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5 min-w-0">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="seclabel g">
+        <h3
+          className="seclabel g"
+          title="Greek for Hermes' staff (Latin: caduceus). Two serpents coiled around a winged rod = inbound and outbound agent-to-agent message flow. Pulse dots travel each serpent when traffic fires."
+        >
           <CaduceusMark /> The Kerykeion
         </h3>
         <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">

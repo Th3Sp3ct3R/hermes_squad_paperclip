@@ -163,11 +163,98 @@ export const MOOD_PRESETS = [
 
 ---
 
+## The Observatory (`/THE/dashboard`)
+
+The dashboard is named **The Observatory** in the UI (icon ☉ Sun / Tiphareth — solar sphere of beauty). The page reframes generic AI-ops metrics through a Hermetic / alchemical lens.
+
+Header runs the **Tabula Smaragdina** axiom across the top in italic small caps:
+
+> Quod est superius est sicut quod est inferius — *as above, so below*
+
+Every panel section header carries a **Caduceus glyph** (`<CaduceusMark />`, inline SVG, `currentColor`-driven) instead of the legacy lightsaber chevron. Color modifiers on `.seclabel` (b/r/p/w/g/s/e) tint the caduceus + glow per section.
+
+### Hermetic Vocabulary (panel name → meaning → data source)
+
+**Renames** (existing panels relabeled):
+
+| Was | Now | Meaning |
+|---|---|---|
+| Sessions Intelligence | The Hermetica | Corpus of Hermes Trismegistus' dialogues — the system's recorded conversations |
+| Skill Inventory | The Grimoire | Magician's spellbook — list of agent operations |
+| Live Feed / Agent Activity | The Akashic Stream | Theosophical cosmic record — Metatron's domain (matches `m3t4tr0n` in activity log) |
+| Top Genres | Modes | Greek musical modes (Dorian, Phrygian, Mixolydian) |
+| Brainwave Tuning | Harmonic Telemetry / The Tuning | Music-theory diagnostics |
+| Usage Trend | The Ephemeris | Astronomical table of planetary positions over time |
+| Top Models | The Daemons | Greek **δαίμων** — intermediary spirit. Each LLM IS a daemon |
+| Cache Efficiency | Memoria | Latin "memory" — the Hermetic Art of Memory (Frances Yates) |
+
+**New Phase 1 panels** (`ui/src/components/dashboard/HermeticPanels.tsx`):
+
+| Panel | Meaning | Data |
+|---|---|---|
+| **The Magnum Opus** | Alchemy's Great Work — Nigredo (DRAFT) → Albedo (GENERATING) → Citrinitas (REVIEW) → Rubedo (APPROVED) → Lapis (PUBLISHED) → Solutio (FAILED) | `suno_issues` grouped by status |
+| **Solve et Coagula** | "Dissolve and coagulate" — alchemical motto | activity log: `suno_issue.rejected` events followed later by `.approved` |
+| **The Eighth Sphere** | 7 planetary spheres + 8th of fixed stars beyond Fate | songs that shipped externally (PUBLISHED count + last ship date) — motto **ἕν τὸ πᾶν** |
+| **Hermes' Errands** | Hermes the messenger god — *Iliad* 24.339 | tool-call ledger today (suno + agent + tool actions) |
+| **The Ouroboros** | Snake biting its own tail — eternal return | retry loops + self-healing events (heartbeat invocations, recovered runs) |
+
+**New Phase 2 panels** (`ui/src/components/dashboard/HermeticMechanism.tsx`):
+
+| Panel | Source | Data |
+|---|---|---|
+| **The Planetary Hour** | Heptameron / Agrippa Bk II — Chaldean order Saturn → Jupiter → Mars → Sun → Venus → Mercury → Moon | current hour's ruler + archangel + countdown to next |
+| **The Heptachord** | Hymn 4 — *septem chordae mundi* (Pythagorean / Orphic) | 7-string SVG, one per chakra/planet at its Solfeggio Hz; brightness = PUBLISHED count in band |
+| **The Monochord** | Robert Fludd, *Utriusque Cosmi* (1617) — single string with 7 planetary stops | Pythagorean ratios 0/8 · 1/8 · 2/8 · 4/8 (mese) · 5/8 · 6/8 · 7/8; pulses on fresh PUBLISHED |
+
+**New Phase 3 panels** (`ui/src/components/dashboard/HermeticTelemetry.tsx`):
+
+| Panel | Source | Data |
+|---|---|---|
+| **The Aspect Grid** | Astrology — ☌ conjunction, ☍ opposition, △ trine | top 6 archangel pairs from activity-log co-occurrence (responsible-agent derived from action keywords when `agentId` is null) |
+| **The Kerykeion** | Greek for Hermes' staff (Latin: caduceus) — two serpents coiled around a winged rod | live agent-to-agent message graph SVG + top 3 message-volume pairs today |
+
+### Planet → Archangel mapping (used by Planetary Hour, Aspect Grid, Kerykeion)
+
+| Planet | Archangel | Sphere |
+|---|---|---|
+| Saturn | Cassiel | Binah |
+| Jupiter | Zadkiel | Chesed |
+| Mars | Michael | Geburah |
+| Sun | Raphael | Tiphareth |
+| Venus | Uriel | Netzach |
+| Mercury | Raziel | Hermes / mysteries |
+| Moon | Gabriel | Yesod |
+
+(Metatron, Jophiel, Sandalphon sit outside the seven planetary hours — Keter / Chokmah-secondary / Malkuth.)
+
+### Activity log → archangel resolution
+
+The activity log records most events with `actorType="user"` and no explicit `agentId` (operations come via HTTP routes without an archangel context). The Telemetry panels handle this with a `deriveResponsibleAgent(action)` helper (in `HermeticTelemetry.tsx`) that maps action keywords to the responsible archangel:
+
+* `*lyrics*` → Zadkiel
+* `*soundPrompt*` → Uriel
+* `*visualPrompt* / *cover_art*` → Jophiel
+* `*releaseCopy*` → Gabriel
+* `*minimax* / *audioUrl*` → Raziel
+* `*publish*` → Sandalphon
+* `*approve* / *review_request* / *reject* / *canon*` → Raphael
+* `*dispatch* / *assign* / *auto_run*` → Michael
+* `*triage* / *failed_stale*` → Cassiel
+* `*linked_to_issue* / *backfilled*` → Metatron
+
+Long-term fix: backend should set `agentId` on activity rows when an archangel is the actor. Until then, derivation works.
+
+---
+
 ## Key Related Components
 
 - `ui/src/components/ChakraFrequencyMap.tsx` — visual frequency map
-- `ui/src/components/SacredGeometry.tsx` — ChakraYantra spinner
+- `ui/src/components/SacredGeometry.tsx` — ChakraYantra + sphere geometries
 - `ui/src/components/ArchangelAvatar.tsx` — ArchangelAvatarStack
+- `ui/src/components/CaduceusMark.tsx` — Hermes' staff section glyph
+- `ui/src/components/dashboard/HermeticPanels.tsx` — Magnum Opus / Solve et Coagula / Eighth Sphere / Hermes' Errands / Ouroboros
+- `ui/src/components/dashboard/HermeticMechanism.tsx` — Planetary Hour / Heptachord / Monochord
+- `ui/src/components/dashboard/HermeticTelemetry.tsx` — Aspect Grid / Kerykeion
 - `ui/src/lib/useAudioAmplitude.ts` — audio pulse hook
 
 ## Git Branch
