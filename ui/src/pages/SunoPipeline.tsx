@@ -56,6 +56,25 @@ const STATUS_LABEL: Record<SunoStatus, string> = {
   FAILED: "Failed",
 };
 
+/**
+ * Magnum Opus stage mapping for kanban column accents.
+ * The pipeline's status arc IS the alchemical opus arc:
+ *   DRAFT (Nigredo)      → black, the prima materia, raw concept
+ *   GENERATING (Albedo)  → white/silver, the work being purified
+ *   REVIEW (Citrinitas)  → yellow, illumination, dawn before the stone
+ *   APPROVED (Rubedo)    → red, the philosopher's stone is realized
+ *   PUBLISHED            → completed work goes out into the world
+ *   FAILED               → the opus dissolved, returned to source
+ */
+const STATUS_OPUS_COLOR: Record<SunoStatus, { bg: string; border: string; label: string; glyph: string }> = {
+  DRAFT:      { bg: "#000000", border: "#C0C0C0", label: "Nigredo",    glyph: "⬛" },
+  GENERATING: { bg: "#FFFFFF", border: "#C0C0C0", label: "Albedo",     glyph: "⬜" },
+  REVIEW:     { bg: "#FFD700", border: "#C0C0C0", label: "Citrinitas", glyph: "🟨" },
+  APPROVED:   { bg: "#DC143C", border: "#C0C0C0", label: "Rubedo",     glyph: "🟥" },
+  PUBLISHED:  { bg: "#FFFFFF", border: "#FFD700", label: "Lapis",      glyph: "⚪" },
+  FAILED:     { bg: "#000000", border: "#DC143C", label: "Solutio",    glyph: "⚫" },
+};
+
 // Hermes Squad Quick Start — each preset glyph drawn from the
 // alchemical / planetary register to keep the Albedo aesthetic
 // consistent across the pipeline. ☿ Mercury for focus, 🜍 Sulphur
@@ -198,9 +217,19 @@ export function SunoPipeline() {
             generation, review, and release.
           </p>
         </div>
-        <Button onClick={() => setShowCreate((v) => !v)} size="sm">
+        <Button
+          onClick={() => setShowCreate((v) => !v)}
+          size="sm"
+          // Albedo register accent — silver border, white text, black field;
+          // becomes Citrinitas (yellow) when the create panel is open.
+          style={
+            showCreate
+              ? { backgroundColor: "#FFD700", color: "#000000", borderColor: "#C0C0C0" }
+              : { backgroundColor: "#FFFFFF", color: "#000000", borderColor: "#C0C0C0" }
+          }
+        >
           {showCreate ? <X className="h-4 w-4 mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
-          {showCreate ? "Cancel" : "As Above, So Below"}
+          {showCreate ? "Cancel" : "Begin Opus"}
         </Button>
       </div>
 
@@ -420,11 +449,22 @@ interface SunoColumnProps {
 }
 
 function SunoColumn({ status, issues, agentNameById, onChangeStatus }: SunoColumnProps) {
+  const opus = STATUS_OPUS_COLOR[status];
   return (
     <div className="flex flex-col min-w-0">
-      <div className="flex items-center justify-between px-2 py-2 mb-1">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <div
+        className="flex items-center justify-between px-2 py-2 mb-1 rounded-t-md border-t-2"
+        style={{ borderTopColor: opus.bg }}
+      >
+        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <span aria-hidden style={{ filter: "drop-shadow(0 0 2px " + opus.bg + ")" }}>{opus.glyph}</span>
           {STATUS_LABEL[status]}
+          <span
+            className="text-[9px] font-normal lowercase tracking-widest opacity-70"
+            title={`Magnum Opus stage: ${opus.label}`}
+          >
+            {opus.label}
+          </span>
         </span>
         <span className="text-xs text-muted-foreground/60 tabular-nums">
           {issues.length}
