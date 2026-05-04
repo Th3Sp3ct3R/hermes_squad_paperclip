@@ -33,17 +33,33 @@ const OPENROUTER_BASE =
  */
 export const SUNO_MODELS = {
   /** Zadkiel — lyrics, creative writing. */
-  lyrics: "minimax/minimax-m2.5:free",
+  lyrics: "google/gemini-2.5-flash",
   /** Uriel — Suno description text, structured + tag-heavy. */
-  soundPrompt: "minimax/minimax-m2.5:free",
+  soundPrompt: "google/gemini-2.5-flash",
   /** Jophiel — image gen prompt, vivid sensory detail. */
-  visualPrompt: "minimax/minimax-m2.5:free",
+  visualPrompt: "google/gemini-2.5-flash",
   /** Gabriel — release notes, social copy. */
-  releaseCopy: "minimax/minimax-m2.5:free",
+  releaseCopy: "google/gemini-2.5-flash",
 } as const;
 
 const FALLBACK_MODEL =
-  process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
+  process.env.OPENROUTER_MODEL ?? "google/gemini-2.5-flash";
+
+/**
+ * Model fallback chain used when the primary model returns 429 (rate
+ * limit) or 503 (provider unavailable). Tries each model in order until
+ * one succeeds. MiniMax stays only as a last-ditch free option — for the
+ * archangel LLM work we lead with paid-but-cheap Gemini Flash, then
+ * Claude Haiku, then free fallbacks. MiniMax's music API is a separate
+ * client that does not flow through this chain.
+ */
+const LLM_FALLBACK_CHAIN: string[] = [
+  "google/gemini-2.5-flash",
+  "anthropic/claude-3.5-haiku",
+  "openai/gpt-4o-mini",
+  "google/gemini-2.0-flash-exp:free",
+  "minimax/minimax-m2.5:free",
+];
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -100,7 +116,41 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
     );
   }
 
-  const model = opts.model ?? FALLBACK_MODEL;
+  // If caller passed an explicit model, try it first then walk the chain.
+  // If they passed nothing, just walk the default chain.
+  const requested = opts.model ?? FALLBACK_MODEL;
+  const chain = [requested, ...LLM_FALLBACK_CHAIN.filter((m) => m !== requested)];
+
+  let lastErr: unknown = null;
+  for (const m of chain) {
+    try {
+      return await callOpenRouterOnce({ ...opts, model: m }, key);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Only fall through on rate-limit / unavailable / payment-needed errors.
+      // Real validation errors (400) should fail fast.
+      const retryable = /\b(429|503|502|504|402|insufficient|rate.limit)\b/i.test(msg);
+      if (!retryable) throw err;
+      lastErr = err;
+      logger.warn(
+        { model: m, error: msg.slice(0, 200) },
+        "[suno-llm] retryable error, trying next model in chain",
+      );
+    }
+  }
+  throw new Error(
+    `[suno-llm] All models in chain failed. Last error: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+}
+
+/** One actual HTTP call. Throws on non-2xx or empty completion. */
+async function callOpenRouterOnce(
+  opts: OpenRouterCallOpts & { model: string },
+  key: string | undefined,
+): Promise<string> {
+  const model = opts.model;
   const startedAt = Date.now();
 
   let res: Response;

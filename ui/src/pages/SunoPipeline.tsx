@@ -56,20 +56,28 @@ const STATUS_LABEL: Record<SunoStatus, string> = {
   FAILED: "Failed",
 };
 
+// Hermes Squad Quick Start — each preset glyph drawn from the
+// alchemical / planetary register to keep the Albedo aesthetic
+// consistent across the pipeline. ☿ Mercury for focus, 🜍 Sulphur
+// for creative fire, ♃ Jupiter for benevolent expansion, ⬛ Nigredo
+// for shadow, ☽ Moon for night, ♂ Mars for drive, ☉ Sun for dawn,
+// 🜄 Water for settling, ⬜ Albedo for completion, 🜔 Salt for
+// stillness, ♄ Saturn for weight, 🜃 Earth for grounding, 🌑 New Moon
+// for sleep.
 const MOOD_PRESET_CHIPS = [
-  { id: "deep-work", label: "Deep Work", emoji: "\u{1F5A5}", concept: "Dark minimalist ambient instrumental designed for deep focus and long-form cognitive work.", targetChakra: "THIRD_EYE" as SunoChakra, genre: "dark ambient, minimal electronic, drone, cinematic texture, experimental" },
-  { id: "creative-flow", label: "Creative Flow", emoji: "\u{1F3A8}", concept: "Warm ambient electronic instrumental that gradually shifts from deep introspective calm into gentle creative flow.", targetChakra: "HEART" as SunoChakra, genre: "ambient electronic, warm pads, cinematic texture, experimental, minimal" },
-  { id: "calm-productivity", label: "Calm Productivity", emoji: "\u{2615}", concept: "Clean, calm ambient instrumental for steady productivity and relaxed focus.", targetChakra: "SOLAR" as SunoChakra, genre: "ambient, minimal electronic, calm, atmospheric, unobtrusive" },
-  { id: "shadow-work", label: "Shadow Work", emoji: "\u{1F52E}", concept: "Dark ambient instrumental designed for shadow integration with emotional regulation.", targetChakra: "ROOT" as SunoChakra, genre: "dark ambient, drone, ethereal bass, shadow integration" },
-  { id: "night-drive", label: "Night Drive", emoji: "\u{1F319}", concept: "Driving through an empty city at 2am with tinted windows.", targetChakra: "SACRAL" as SunoChakra, genre: "dark trap, phonk, memphis rap instrumental, cinematic hip-hop" },
-  { id: "gym-run", label: "Gym / Run", emoji: "\u{1F4AA}", concept: "Controlled rage, not reckless anger. A machine, not an animal.", targetChakra: "ROOT" as SunoChakra, genre: "dark industrial hip-hop, aggressive trap, grime instrumental, phonk" },
-  { id: "morning-walk", label: "Morning Walk", emoji: "\u{1F6B6}", concept: "A man walking through cold air with purpose.", targetChakra: "SOLAR" as SunoChakra, genre: "boom bap, instrumental hip-hop, golden era beats, dusty samples" },
-  { id: "wind-down", label: "Wind Down", emoji: "\u{1F373}", concept: "Cooking something good alone in a clean kitchen with low lighting.", targetChakra: "HEART" as SunoChakra, genre: "lo-fi hip-hop, chillhop, smooth jazz beats, ambient R&B instrumental" },
-  { id: "alpha-theta-bridge", label: "Work Wrap-Up", emoji: "\u{1F306}", concept: "Dark ambient soundscape designed for late-night focus and calm.", targetChakra: "THIRD_EYE" as SunoChakra, genre: "dark ambient, minimal, luxury" },
-  { id: "architect-silence", label: "Architect Silence", emoji: "\u{1F3DB}", concept: "Dark AI ambient drone with no tempo and no identifiable structure.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, void" },
-  { id: "dark-piano", label: "Dark Piano", emoji: "\u{1F3B9}", concept: "Sparse, slow piano notes played in a dark ambient space.", targetChakra: "HEART" as SunoChakra, genre: "dark piano, ambient luxury" },
-  { id: "pre-sleep", label: "Pre-Sleep", emoji: "\u{1F4D6}", concept: "Ultra-minimal ambient soundscape designed for late-night listening and subconscious learning.", targetChakra: "CROWN" as SunoChakra, genre: "ultra-minimal, dark ambient, near-silence" },
-  { id: "sleep", label: "Sleep", emoji: "\u{1F634}", concept: "Ultra-minimalist dark ambient soundscape designed for neural shutdown.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, sleep music, deep space, minimal electronic" },
+  { id: "deep-work", label: "Deep Work", emoji: "\u{263F}", concept: "Dark minimalist ambient instrumental designed for deep focus and long-form cognitive work.", targetChakra: "THIRD_EYE" as SunoChakra, genre: "dark ambient, minimal electronic, drone, cinematic texture, experimental" },
+  { id: "creative-flow", label: "Creative Flow", emoji: "\u{1F70D}", concept: "Warm ambient electronic instrumental that gradually shifts from deep introspective calm into gentle creative flow.", targetChakra: "HEART" as SunoChakra, genre: "ambient electronic, warm pads, cinematic texture, experimental, minimal" },
+  { id: "calm-productivity", label: "Calm Productivity", emoji: "\u{2643}", concept: "Clean, calm ambient instrumental for steady productivity and relaxed focus.", targetChakra: "SOLAR" as SunoChakra, genre: "ambient, minimal electronic, calm, atmospheric, unobtrusive" },
+  { id: "shadow-work", label: "Shadow Work", emoji: "\u{2B1B}", concept: "Dark ambient instrumental designed for shadow integration with emotional regulation.", targetChakra: "ROOT" as SunoChakra, genre: "dark ambient, drone, ethereal bass, shadow integration" },
+  { id: "night-drive", label: "Night Drive", emoji: "\u{263D}", concept: "Driving through an empty city at 2am with tinted windows.", targetChakra: "SACRAL" as SunoChakra, genre: "dark trap, phonk, memphis rap instrumental, cinematic hip-hop" },
+  { id: "gym-run", label: "Gym / Run", emoji: "\u{2642}", concept: "Controlled rage, not reckless anger. A machine, not an animal.", targetChakra: "ROOT" as SunoChakra, genre: "dark industrial hip-hop, aggressive trap, grime instrumental, phonk" },
+  { id: "morning-walk", label: "Morning Walk", emoji: "\u{2609}", concept: "A man walking through cold air with purpose.", targetChakra: "SOLAR" as SunoChakra, genre: "boom bap, instrumental hip-hop, golden era beats, dusty samples" },
+  { id: "wind-down", label: "Wind Down", emoji: "\u{1F704}", concept: "Cooking something good alone in a clean kitchen with low lighting.", targetChakra: "HEART" as SunoChakra, genre: "lo-fi hip-hop, chillhop, smooth jazz beats, ambient R&B instrumental" },
+  { id: "alpha-theta-bridge", label: "Work Wrap-Up", emoji: "\u{2B1C}", concept: "Dark ambient soundscape designed for late-night focus and calm.", targetChakra: "THIRD_EYE" as SunoChakra, genre: "dark ambient, minimal, luxury" },
+  { id: "architect-silence", label: "Architect Silence", emoji: "\u{1F714}", concept: "Dark AI ambient drone with no tempo and no identifiable structure.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, void" },
+  { id: "dark-piano", label: "Dark Piano", emoji: "\u{2644}", concept: "Sparse, slow piano notes played in a dark ambient space.", targetChakra: "HEART" as SunoChakra, genre: "dark piano, ambient luxury" },
+  { id: "pre-sleep", label: "Pre-Sleep", emoji: "\u{1F703}", concept: "Ultra-minimal ambient soundscape designed for late-night listening and subconscious learning.", targetChakra: "CROWN" as SunoChakra, genre: "ultra-minimal, dark ambient, near-silence" },
+  { id: "sleep", label: "Sleep", emoji: "\u{1F311}", concept: "Ultra-minimalist dark ambient soundscape designed for neural shutdown.", targetChakra: "CROWN" as SunoChakra, genre: "dark ambient, drone, sleep music, deep space, minimal electronic" },
 ];
 
 const PIPELINE_AGENTS: { name: ArchangelName; role: string; sphere: string; domain: string }[] = [
