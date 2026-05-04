@@ -8,6 +8,7 @@ import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { usageStatsApi } from "../api/usageStats";
+import { sunoPipelineApi, SUNO_CHAKRA_FREQUENCIES } from "../api/sunoPipeline";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -21,6 +22,8 @@ import { cn } from "../lib/utils";
 import { Bot, LayoutDashboard } from "lucide-react";
 import { ArchangelAvatar } from "@/components/ArchangelAvatar";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { WorkspacePulse } from "../components/dashboard/WorkspacePulse";
+import { AgentActivityBar } from "../components/dashboard/AgentActivityBar";
 import type { Agent, Issue } from "@paperclipai/shared";
 import type { ArchangelName } from "@/components/SacredGeometry";
 
@@ -55,13 +58,13 @@ function AgentNode({ agent, size, working }: { agent: OrgAgent; size: "xl" | "lg
         )} />
       </div>
       <span className={cn(
-        "font-semibold text-center leading-tight",
+        "font-semibold text-center leading-tight glow-text",
         size === "xl" ? "text-base" : "text-sm",
       )}>
         {agent.name}
       </span>
       <span className={cn(
-        "text-muted-foreground text-center leading-tight",
+        "text-muted-foreground/80 text-center leading-tight",
         size === "xl" ? "text-xs" : "text-[11px]",
       )}>
         {agent.role}
@@ -170,7 +173,7 @@ function AgentActivityFeed({ agents, runs }: { agents?: Agent[]; runs?: { agentI
   if (activeRuns.length === 0) {
     return (
       <div className="rounded-xl border border-border/30 bg-card/30 p-4">
-        <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+        <h3 className="section-header mb-3">
           Agent Activity
         </h3>
         <div className="flex items-center gap-3 py-6 justify-center">
@@ -183,7 +186,7 @@ function AgentActivityFeed({ agents, runs }: { agents?: Agent[]; runs?: { agentI
 
   return (
     <div className="rounded-xl border border-border/30 bg-card/30 p-4">
-      <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+      <h3 className="section-header mb-3">
         Agent Activity
       </h3>
       <div className="space-y-2">
@@ -441,6 +444,25 @@ export function Dashboard() {
 
       {data && (
         <>
+          {/* ── 0. Workspace Pulse — stats strip ───────────────────── */}
+          <WorkspacePulse
+            sessions={data.tasks.inProgress + data.tasks.open}
+            totalTokens={usageStats?.totalTokens ?? 0}
+            totalCalls={usageStats?.totalCalls ?? 0}
+            cacheHitRate={usageStats?.cacheHitRate ?? 0}
+            activeModel={usageStats?.byModel?.[0]?.model ?? null}
+            activeModelCalls={usageStats?.byModel?.[0]?.calls ?? 0}
+            activeModelSessions={0}
+            byDay={usageStats?.byDay ?? []}
+          />
+
+          {/* ── 0.5. Agent Activity Bar ────────────────────────────── */}
+          <AgentActivityBar
+            agents={agents ?? []}
+            totalCalls={usageStats?.totalCalls ?? 0}
+            cacheHitRate={usageStats?.cacheHitRate ?? 0}
+          />
+
           {/* ── 1. Archangel Org Chart + Live Activity ───────────────── */}
           <div className="grid md:grid-cols-3 gap-4">
             <div className="md:col-span-2">
@@ -451,36 +473,12 @@ export function Dashboard() {
             </div>
           </div>
 
-          {/* ── 2. Stats Row ─────────────────────────────────────────── */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-            <div className="rounded-lg border border-border/40 bg-card/50 px-4 py-3">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Sessions</span>
-              <div className="text-2xl font-bold tabular-nums">{data.tasks.inProgress + data.tasks.open}</div>
-            </div>
-            <div className="rounded-lg border border-border/40 bg-card/50 px-4 py-3">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Tokens Used</span>
-              <div className="text-2xl font-bold tabular-nums">{formatNumber(usageStats?.totalTokens ?? 0)}</div>
-            </div>
-            <div className="rounded-lg border border-border/40 bg-card/50 px-4 py-3">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">API Calls</span>
-              <div className="text-2xl font-bold tabular-nums">{usageStats?.totalCalls ?? 0}</div>
-            </div>
-            <div className="rounded-lg border border-border/40 bg-card/50 px-4 py-3">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Active Model</span>
-              <div className="mt-1">
-                <span className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                  {usageStats?.byModel?.[0]?.model ?? "minimax/minimax-m2.5:free"}
-                </span>
-              </div>
-            </div>
-          </div>
-
           {/* ── 3. Usage Trend + Top Models ──────────────────────────── */}
-          <div className="grid md:grid-cols-3 gap-4">
+          <div className="grid md:grid-cols-3 gap-[14px]">
             {/* Usage Trend — 2/3 width */}
-            <div className="md:col-span-2 rounded-lg border border-border/40 bg-card/30 p-4">
+            <div className="md:col-span-2 rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Usage Trend · 30D</h3>
+                <h3 className="seclabel b"><span className="lc" /> USAGE TREND · 30D</h3>
                 <div className="flex gap-1">
                   {["7D", "14D", "30D"].map(p => (
                     <button key={p} className={cn("px-2 py-0.5 text-[10px] rounded", p === "30D" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
@@ -499,8 +497,8 @@ export function Dashboard() {
             </div>
 
             {/* Top Models — 1/3 width */}
-            <div className="rounded-lg border border-border/40 bg-card/30 p-4">
-              <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">Top Models</h3>
+            <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
+              <h3 className="seclabel p mb-3"><span className="lc" /> TOP MODELS · 30D</h3>
               <div className="space-y-2">
                 {usageStats && usageStats.byModel.length > 0 ? (
                   usageStats.byModel.slice(0, 5).map((m) => (
@@ -526,16 +524,16 @@ export function Dashboard() {
           </div>
 
           {/* ── Hermes: Sessions Intelligence + Skills ────────────────── */}
-          <div className="grid md:grid-cols-3 gap-4">
+          <div className="grid md:grid-cols-3 gap-[14px]">
             {/* Sessions Intelligence — 2/3 width */}
             <div className="md:col-span-2">
-              <div className="rounded-xl border border-border/30 bg-card/30 p-4">
+              <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                    Sessions Intelligence
+                  <h3 className="seclabel w">
+                    <span className="lc" /> Sessions Intelligence
                   </h3>
-                  <span className="text-[10px] text-muted-foreground">
-                    {recentActivity.length} RECENT
+                  <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
+                    <span className="text-[#ededed] font-medium">{recentActivity.length}</span> recent
                   </span>
                 </div>
                 <div className="space-y-1">
@@ -564,32 +562,35 @@ export function Dashboard() {
             </div>
 
             {/* Right column — stacked cards */}
-            <div className="space-y-4">
+            <div className="space-y-[14px]">
               {/* Cache Efficiency */}
-              <div className="rounded-xl border border-border/30 bg-card/30 p-4">
+              <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Cache Efficiency</h3>
-                  <span className="text-[10px] text-muted-foreground">30D</span>
+                  <h3 className="seclabel b"><span className="lc" /> Cache Efficiency</h3>
+                  <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">30D</span>
                 </div>
                 {usageStats && usageStats.totalCalls > 0 ? (
                   <>
-                    <div className="text-3xl font-bold tabular-nums">{usageStats.cacheHitRate}%</div>
-                    <span className="text-xs text-muted-foreground">prompt token cache hit rate</span>
+                    <div className="text-[42px] font-semibold tabular-nums tracking-tight leading-none glow-w">
+                      {usageStats.cacheHitRate}%
+                      <span className="font-mono text-[11px] text-[#6e6e6e] ml-2 tracking-[0.08em] uppercase font-medium">Hit Rate</span>
+                    </div>
+                    <span className="font-mono text-[11px] text-[#6e6e6e] tracking-[0.06em] mt-1.5 block">prompt token cache hit rate</span>
                   </>
                 ) : (
                   <>
-                    <div className="text-3xl font-bold tabular-nums">&mdash;</div>
-                    <span className="text-xs text-muted-foreground">No cache data yet</span>
+                    <div className="text-[42px] font-semibold tabular-nums tracking-tight leading-none text-[#404040]">&mdash;</div>
+                    <span className="font-mono text-[11px] text-[#6e6e6e]">No cache data yet</span>
                   </>
                 )}
               </div>
 
               {/* Agent Skills */}
-              <div className="rounded-xl border border-border/30 bg-card/30 p-4">
+              <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Agent Skills</h3>
-                  <span className="text-[10px] text-muted-foreground">
-                    {agents?.length ?? 0} AGENTS
+                  <h3 className="seclabel b"><span className="lc" /> Skill Inventory</h3>
+                  <span className="font-mono text-[11px] tracking-[0.06em] uppercase text-[#6e6e6e]">
+                    <span className="text-[#ededed] font-medium">{agents?.length ?? 0}</span> skills
                   </span>
                 </div>
                 <div className="space-y-2">
@@ -607,10 +608,13 @@ export function Dashboard() {
             </div>
           </div>
 
+          {/* ── Songs Metrics · Brainwave Tuning · Chakra Roots ─────────── */}
+          <SongsMetricsPanel companyId={selectedCompanyId!} />
+
           {/* ── 4. Recent Tasks ───────────────────────────────────────── */}
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-              Recent Tasks
+            <h3 className="seclabel r mb-3">
+              <span className="lc" /> RECENT TASKS
             </h3>
             {recentIssues.length === 0 ? (
               <div className="border border-border p-4">
@@ -661,6 +665,324 @@ export function Dashboard() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Songs Metrics + Brainwave Tuning + Songs-by-Chakra panel.
+ * Pulls live suno_issues, derives:
+ *   - total tracks + estimated minutes
+ *   - brainwave-band distribution from chakra mapping
+ *     (Delta < Crown/Sleep, Theta < Third Eye / Deep work, Alpha < Heart,
+ *      Beta < Solar/Mars/Drive)
+ *   - songs by chakra (root → crown)
+ *   - top genres bar chart
+ */
+function SongsMetricsPanel({ companyId }: { companyId: string }) {
+  const { data: songs } = useQuery({
+    queryKey: ["dashboard-suno", companyId],
+    queryFn: () => sunoPipelineApi.list(companyId),
+    refetchInterval: 60_000,
+  });
+
+  const metrics = useMemo(() => {
+    const list = songs ?? [];
+    const totalTracks = list.length;
+    const totalMinutes = totalTracks * 3.5;
+
+    // Chakra → brainwave band mapping
+    const bandFor: Record<string, "delta" | "theta" | "alpha" | "beta"> = {
+      CROWN: "delta",
+      THIRD_EYE: "theta",
+      THROAT: "alpha",
+      HEART: "alpha",
+      SOLAR: "beta",
+      SACRAL: "beta",
+      ROOT: "beta",
+    };
+    const bands = { delta: 0, theta: 0, alpha: 0, beta: 0 };
+    const chakraCounts: Record<string, number> = {
+      ROOT: 0, SACRAL: 0, SOLAR: 0, HEART: 0,
+      THROAT: 0, THIRD_EYE: 0, CROWN: 0,
+    };
+    const genreCounts: Record<string, number> = {};
+
+    for (const s of list) {
+      const c = s.targetChakra ?? "";
+      if (c in chakraCounts) chakraCounts[c] += 1;
+      const band = bandFor[c];
+      if (band) bands[band] += 1;
+      const g = (s.genre ?? "").trim();
+      if (g) {
+        // Take the first comma-separated tag as the canonical genre
+        const head = g.split(",")[0]?.trim().toLowerCase() ?? "";
+        if (head) genreCounts[head] = (genreCounts[head] ?? 0) + 1;
+      }
+    }
+    const total = totalTracks || 1;
+    const bandPct = {
+      delta: Math.round((bands.delta / total) * 100),
+      theta: Math.round((bands.theta / total) * 100),
+      alpha: Math.round((bands.alpha / total) * 100),
+      beta: Math.round((bands.beta / total) * 100),
+    };
+    const deepFocusPct = bandPct.theta;
+
+    const topGenres = Object.entries(genreCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    return {
+      totalTracks,
+      totalMinutes,
+      bandPct,
+      deepFocusPct,
+      chakraCounts,
+      topGenres,
+    };
+  }, [songs]);
+
+  const CHAKRA_COLORS: Record<string, string> = {
+    ROOT: "#ef4444",
+    SACRAL: "#f97316",
+    SOLAR: "#eab308",
+    HEART: "#22c55e",
+    THROAT: "#06b6d4",
+    THIRD_EYE: "#6366f1",
+    CROWN: "#a855f7",
+  };
+
+  const hours = Math.floor(metrics.totalMinutes / 60);
+  const mins = Math.round(metrics.totalMinutes % 60);
+
+  return (
+    <div className="grid lg:grid-cols-3 gap-4">
+      {/* Songs Metrics + Brainwave Tuning — left, 2 cols */}
+      <div
+        className="lg:col-span-2 rounded-xl border p-5 space-y-4"
+        style={{ borderColor: "rgba(255,255,255,0.08)" }}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            Songs Metrics · Brainwave Tuning
+          </h3>
+          <span
+            className="font-mono text-[11px] tabular-nums tracking-wider"
+            style={{ color: "#a3a3a3" }}
+          >
+            {metrics.totalTracks.toLocaleString()} tracks
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-4 items-end">
+          <div>
+            <div
+              className="text-4xl font-bold tabular-nums"
+              style={{ color: "#fff" }}
+            >
+              {metrics.deepFocusPct}
+              <span className="text-lg" style={{ color: "#6a6a6a" }}>%</span>
+            </div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground mt-1">
+              Deep Focus · 7D
+            </div>
+          </div>
+          <div className="text-right">
+            <div
+              className="text-2xl font-semibold tabular-nums"
+              style={{ color: "#c084fc" }}
+            >
+              {hours}<span className="text-base text-muted-foreground">h</span>{" "}
+              {mins}<span className="text-base text-muted-foreground">m</span>
+            </div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground mt-1">
+              Listened
+            </div>
+          </div>
+        </div>
+
+        {/* Brainwave band cards */}
+        <div className="grid grid-cols-2 gap-3 pt-2">
+          <BrainwaveBand
+            symbol="θ"
+            name="Theta"
+            range="4–8 Hz"
+            pct={metrics.bandPct.theta}
+            label="Deep Work · Primary"
+            color="#22c55e"
+          />
+          <BrainwaveBand
+            symbol="α"
+            name="Alpha"
+            range="8–12 Hz"
+            pct={metrics.bandPct.alpha}
+            label="Calm Review"
+            color="#06b6d4"
+          />
+          <BrainwaveBand
+            symbol="β"
+            name="Beta"
+            range="13–30 Hz"
+            pct={metrics.bandPct.beta}
+            label="Sprints · Drive"
+            color="#fff"
+          />
+          <BrainwaveBand
+            symbol="Δ"
+            name="Delta"
+            range="0.5–4 Hz"
+            pct={metrics.bandPct.delta}
+            label="Sleep · Recovery"
+            color="#3b82f6"
+          />
+        </div>
+
+        {/* Top genres */}
+        {metrics.topGenres.length > 0 && (
+          <div className="pt-3 border-t border-border/30 space-y-2">
+            <h4 className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Top Genres
+            </h4>
+            {metrics.topGenres.map(([genre, count]) => {
+              const pct = Math.round(
+                (count / Math.max(1, metrics.totalTracks)) * 100,
+              );
+              return (
+                <div key={genre} className="flex items-center gap-3 text-sm">
+                  <span className="w-44 truncate text-foreground/90">
+                    {genre}
+                  </span>
+                  <div className="flex-1 h-1.5 rounded-full bg-muted/40 overflow-hidden">
+                    <div
+                      className="h-full"
+                      style={{
+                        width: `${pct}%`,
+                        background: "linear-gradient(90deg, #a855f7, #c084fc)",
+                      }}
+                    />
+                  </div>
+                  <span className="text-[11px] font-mono tabular-nums text-muted-foreground w-16 text-right">
+                    {count} tracks
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Songs by Chakra — right, 1 col */}
+      <div
+        className="rounded-xl border p-5 space-y-3"
+        style={{ borderColor: "rgba(255,255,255,0.08)" }}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            Songs · By Chakra Root
+          </h3>
+          <span className="text-[10px] text-muted-foreground">
+            {Object.values(metrics.chakraCounts).filter((v) => v > 0).length}/7 lit
+          </span>
+        </div>
+        <div className="space-y-2">
+          {(Object.entries(metrics.chakraCounts) as Array<[string, number]>).map(
+            ([chakra, count]) => {
+              const max = Math.max(1, ...Object.values(metrics.chakraCounts));
+              const pct = (count / max) * 100;
+              const color = CHAKRA_COLORS[chakra] ?? "#999";
+              const hz = SUNO_CHAKRA_FREQUENCIES[chakra as keyof typeof SUNO_CHAKRA_FREQUENCIES];
+              return (
+                <div key={chakra} className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="flex items-center gap-2">
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: 6,
+                          height: 6,
+                          borderRadius: "50%",
+                          background: color,
+                        }}
+                      />
+                      <span className="font-mono uppercase tracking-wider text-muted-foreground">
+                        {chakra.replace("_", " ")}
+                      </span>
+                      <span className="font-mono text-[10px] text-muted-foreground/60">
+                        {hz}Hz
+                      </span>
+                    </span>
+                    <span
+                      className="font-mono tabular-nums"
+                      style={{ color: count === 0 ? "#ef4444" : "#fff" }}
+                    >
+                      {count}
+                    </span>
+                  </div>
+                  <div className="h-1 rounded-full bg-muted/30 overflow-hidden">
+                    <div
+                      className="h-full transition-all"
+                      style={{
+                        width: `${pct}%`,
+                        background: color,
+                        opacity: count === 0 ? 0.15 : 0.85,
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            },
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BrainwaveBand({
+  symbol,
+  name,
+  range,
+  pct,
+  label,
+  color,
+}: {
+  symbol: string;
+  name: string;
+  range: string;
+  pct: number;
+  label: string;
+  color: string;
+}) {
+  return (
+    <div
+      className="rounded-lg border p-3"
+      style={{ borderColor: "rgba(255,255,255,0.08)" }}
+    >
+      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+        <span style={{ color }} className="font-mono mr-1">
+          {symbol}
+        </span>
+        {name} · {range}
+      </div>
+      <div
+        className="text-2xl font-bold tabular-nums mt-1"
+        style={{ color }}
+      >
+        {pct}%
+      </div>
+      <div className="text-[10px] uppercase tracking-widest text-muted-foreground mt-0.5">
+        {label}
+      </div>
+      {/* mini sine wave hint */}
+      <svg viewBox="0 0 100 12" className="w-full h-3 mt-2" preserveAspectRatio="none">
+        <path
+          d="M0,6 Q12.5,1 25,6 T50,6 T75,6 T100,6"
+          stroke={color}
+          strokeWidth="1"
+          fill="none"
+          opacity={pct > 0 ? 0.7 : 0.15}
+        />
+      </svg>
     </div>
   );
 }
