@@ -16,6 +16,7 @@ const NAV_LINKS = [
   { to: "/goals", label: "The Intentions" },
   { to: "/projects", label: "The Operations" },
   { to: "/suno", label: "Musica Universalis" },
+  { to: "/initiate", label: "The Initiate's Path" },
   { to: "/activity", label: "Activity" },
   { to: "/costs", label: "Costs" },
 ] as const;
@@ -48,9 +49,10 @@ export function TopBar() {
         </svg>
       </div>
 
-      {/* Title */}
-      <div className="text-[15px] font-semibold tracking-[-0.01em] shrink-0">
-        {selectedCompany?.name ?? "Hermes"} <span className="text-[#a1a1a1] font-normal">/ Workspace</span>
+      {/* Title — hermes/workspace, lower-case slash format */}
+      <div className="text-[15px] font-semibold tracking-[-0.01em] shrink-0 lowercase">
+        {selectedCompany?.name ? selectedCompany.name.toLowerCase() : "hermes"}
+        <span className="text-[#a1a1a1] font-normal">/workspace</span>
       </div>
 
       {/* Nav links */}

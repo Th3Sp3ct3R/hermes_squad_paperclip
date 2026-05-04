@@ -24,6 +24,7 @@ import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { HermesFeed } from "./pages/HermesFeed";
 import { SunoPipeline } from "./pages/SunoPipeline";
+import InitiatesPath from "./pages/InitiatesPath";
 import { CompanySettings } from "./pages/CompanySettings";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceSettings } from "./pages/InstanceSettings";
@@ -151,6 +152,7 @@ function boardRoutes() {
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="suno" element={<SunoPipeline />} />
+      <Route path="initiate" element={<InitiatesPath />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
