@@ -83,7 +83,7 @@ export function HermesFeed() {
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Hermes Feed" }]);
+    setBreadcrumbs([{ label: "Akashic Stream 𓂀" }]);
   }, [setBreadcrumbs]);
 
   // Persist config to localStorage as it changes
@@ -157,11 +157,12 @@ export function HermesFeed() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <Activity className="h-6 w-6" />
-            Hermes Feed
+            <span aria-hidden style={{ fontSize: "1.6rem" }}>𓂀</span>
+            Akashic Stream
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Real-time HermesBus events from operator connectors (federation api → SSE).
+          <p className="text-sm text-muted-foreground italic">
+            The eye that records all. Real-time HermesBus events from
+            operator connectors (federation api → SSE).
           </p>
         </div>
         <ConnBadge conn={conn} />

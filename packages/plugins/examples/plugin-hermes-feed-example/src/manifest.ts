@@ -19,7 +19,7 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Hermes Feed",
+  displayName: "Akashic Stream 𓂀",
   description:
     "Real-time HermesBus event stream from operator connectors (heartbeats, federation push failures, account relogin alerts).",
   author: "Vanta Labs",
@@ -53,14 +53,14 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "page",
         id: PAGE_SLOT_ID,
-        displayName: "Hermes Feed",
+        displayName: "Akashic Stream 𓂀",
         exportName: PAGE_EXPORT,
         routePath: PAGE_ROUTE,
       },
       {
         type: "sidebar",
         id: SIDEBAR_SLOT_ID,
-        displayName: "Hermes Feed",
+        displayName: "Akashic Stream 𓂀",
         exportName: SIDEBAR_EXPORT,
       },
     ],

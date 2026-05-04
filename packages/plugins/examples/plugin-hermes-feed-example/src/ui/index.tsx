@@ -334,8 +334,8 @@ export function HermesFeedSidebar({ context }: PluginSidebarProps) {
       href={`/${prefix}/hermes-feed`}
       className="flex items-center gap-2 px-3 py-2 text-sm rounded hover:bg-accent transition-colors"
     >
-      <span aria-hidden>📡</span>
-      <span>Hermes Feed</span>
+      <span aria-hidden>𓂀</span>
+      <span>Akashic Stream</span>
     </a>
   );
 }
