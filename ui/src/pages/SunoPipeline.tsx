@@ -39,8 +39,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ChakraFrequencyMap } from "@/components/ChakraFrequencyMap";
-import { BatchProgressPanel } from "@/components/BatchProgressPanel";
+// ChakraFrequencyMap and BatchProgressPanel removed — MiniMax-only pipeline
 import { ArchangelAvatar, ArchangelAvatarStack } from "@/components/ArchangelAvatar";
 import { ChakraYantra, type ArchangelName, type ChakraKey } from "@/components/SacredGeometry";
 import { useAudioAmplitude } from "@/lib/useAudioAmplitude";
@@ -644,19 +643,6 @@ export function SunoPipeline() {
           )}
         </Card>
       )}
-
-      <ChakraFrequencyMap
-        issues={issues ?? []}
-        onChakraClick={(chakra) => {
-          setInvocationChakra(chakra);
-          setInvocationConcept(undefined);
-          setInvocationGenre(undefined);
-          setInvocationOpen(true);
-        }}
-      />
-
-      {/* Batch Progress — per-batch cards with progress bars + execute buttons */}
-      {selectedCompanyId && <BatchProgressPanel companyId={selectedCompanyId} />}
 
       {/* Archangel Agent Bar — shows the pipeline agents in order */}
       <ArchangelAgentBar issues={issues ?? []} />

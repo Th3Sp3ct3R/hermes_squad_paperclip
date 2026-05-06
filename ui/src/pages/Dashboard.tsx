@@ -493,16 +493,6 @@ export function Dashboard() {
             cacheHitRate={usageStats?.cacheHitRate ?? 0}
           />
 
-          {/* ── 1. Archangel Org Chart + Live Activity ───────────────── */}
-          <div className="grid md:grid-cols-3 gap-4">
-            <div className="md:col-span-2">
-              <ArchangelOrgChart agentsRunning={agentsRunning} />
-            </div>
-            <div>
-              <AgentActivityFeed agents={agents} runs={runs as any} />
-            </div>
-          </div>
-
           {/* ── 3. Usage Trend + Top Models ──────────────────────────── */}
           <div className="grid md:grid-cols-3 gap-[14px]">
             {/* Usage Trend — 2/3 width */}
@@ -646,6 +636,16 @@ export function Dashboard() {
             runs={(runs as any) ?? null}
           />
 
+          {/* ── Archangel Org Chart — right under Magnum Opus ────────── */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="md:col-span-2">
+              <ArchangelOrgChart agentsRunning={agentsRunning} />
+            </div>
+            <div>
+              <AgentActivityFeed agents={agents} runs={runs as any} />
+            </div>
+          </div>
+
           {/* ── The Celestial Mechanism: Planetary Hour + Heptachord + Monochord ── */}
           <MechanismRow sunoIssues={sunoIssues ?? null} />
 
@@ -656,9 +656,6 @@ export function Dashboard() {
               new Map((agents ?? []).map((a) => [a.id, a.name]))
             }
           />
-
-          {/* ── Songs Metrics · Brainwave Tuning · Chakra Roots ─────────── */}
-          <SongsMetricsPanel companyId={selectedCompanyId!} />
 
           {/* ── 4. Recent Tasks ───────────────────────────────────────── */}
           <div className="min-w-0">
