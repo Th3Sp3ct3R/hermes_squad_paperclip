@@ -29,27 +29,27 @@ const OPENROUTER_BASE =
  */
 export const SUNO_MODELS = {
   /** Zadkiel — lyrics, creative writing. */
-  lyrics: "google/gemini-2.5-flash",
-  /** Uriel — Suno description text, structured + tag-heavy. */
-  soundPrompt: "google/gemini-2.5-flash",
+  lyrics: "minimax/minimax-m2.5:free",
+  /** Uriel — sound description text, structured + tag-heavy. */
+  soundPrompt: "minimax/minimax-m2.5:free",
   /** Jophiel — image gen prompt, vivid sensory detail. */
-  visualPrompt: "google/gemini-2.5-flash",
+  visualPrompt: "minimax/minimax-m2.5:free",
   /** Gabriel — release notes, social copy. */
-  releaseCopy: "google/gemini-2.5-flash",
+  releaseCopy: "minimax/minimax-m2.5:free",
 } as const;
 
 const FALLBACK_MODEL =
-  process.env.OPENROUTER_MODEL ?? "google/gemini-2.5-flash";
+  process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
 
 /**
  * Model fallback chain used when the primary model returns 429 (rate
  * limit) or 503 (provider unavailable). Tries each model in order until
- * one succeeds. All route through OpenRouter.
+ * one succeeds. All route through OpenRouter — free tier only.
  */
 const LLM_FALLBACK_CHAIN: string[] = [
-  "google/gemini-2.5-flash",
-  "anthropic/claude-3.5-haiku",
-  "openai/gpt-4o-mini",
+  "minimax/minimax-m2.5:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "nousresearch/hermes-3-llama-3.1-405b:free",
 ];
 
 interface ChatMessage {
@@ -99,6 +99,10 @@ export interface SunoLlmContext {
  * model starts with "kimi-" and KIMI_API_KEY is set; otherwise falls through
  * to OpenRouter. Returns the assistant's trimmed text content.
  */
+// Rate-limit guard for free-tier models (20 req/min)
+let _lastCallMs = 0;
+const FREE_TIER_DELAY_MS = 3500; // ~17 req/min, safely under 20
+
 export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> {
   const orKey = process.env.OPENROUTER_API_KEY;
 
@@ -107,6 +111,14 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
       "OPENROUTER_API_KEY is not configured — set it to use suno generation",
     );
   }
+
+  // Throttle calls on free-tier models to avoid rate limits
+  const now = Date.now();
+  const elapsed = now - _lastCallMs;
+  if (elapsed < FREE_TIER_DELAY_MS) {
+    await new Promise((r) => setTimeout(r, FREE_TIER_DELAY_MS - elapsed));
+  }
+  _lastCallMs = Date.now();
 
   const requested = opts.model ?? FALLBACK_MODEL;
   const chain = [requested, ...LLM_FALLBACK_CHAIN.filter((m) => m !== requested)];
