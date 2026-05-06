@@ -140,7 +140,9 @@ export async function generateMinimaxMusic(
     output_format: outputFormat,
     stream: false,
   };
-  if (input.audioSetting) {
+  // Note: audio_setting is NOT supported on music-2.6 models (causes 2013 error).
+  // Only send it for music-01/music-02 models.
+  if (input.audioSetting && !model.startsWith("music-2.6") && !model.startsWith("music-cover")) {
     body.audio_setting = {
       sample_rate: input.audioSetting.sampleRate ?? 44100,
       bitrate: input.audioSetting.bitrate ?? 256000,
