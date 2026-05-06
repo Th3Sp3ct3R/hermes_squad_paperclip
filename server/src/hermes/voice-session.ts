@@ -22,8 +22,8 @@ interface ChatMessage {
 }
 
 interface ClientMessage {
-  type: "audio" | "interrupt" | "config";
-  data?: string; // base64 audio for type=audio
+  type: "audio" | "text" | "interrupt" | "config";
+  data?: string; // base64 audio for type=audio, text string for type=text
   preset?: HermesMinimaxPreset;
 }
 
@@ -82,6 +82,9 @@ export class HermesVoiceSession {
         switch (msg.type) {
           case "audio":
             if (msg.data) await this.handleAudio(msg.data);
+            break;
+          case "text":
+            if (msg.data) await this.handleText(msg.data);
             break;
           case "interrupt":
             this.handleInterrupt();
@@ -145,6 +148,37 @@ export class HermesVoiceSession {
       // 4. Synthesize and send audio
       await this.synthesizeAndStream(response);
 
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        this.send({ type: "error", message: (err as Error).message });
+      }
+    }
+  }
+
+  // ─── Text pipeline (skips Whisper, still does LLM + TTS) ──
+
+  private async handleText(text: string) {
+    if (this.isResponding) {
+      this.handleInterrupt();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    try {
+      this.send({ type: "transcription", text, confidence: 1.0 });
+      this.history.push({ role: "user", content: text });
+
+      this.send({ type: "thinking" });
+      this.abortController = new AbortController();
+      this.isResponding = true;
+
+      const response = await this.generateResponse(this.abortController.signal);
+      if (!response) return;
+
+      // Send text response immediately (don't wait for TTS)
+      this.send({ type: "audio_end", fullText: response });
+
+      // Then synthesize and stream audio
+      await this.synthesizeAndStream(response);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         this.send({ type: "error", message: (err as Error).message });

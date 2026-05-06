@@ -32,6 +32,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       errorBody,
     );
   }
+  // 204 No Content returns no body — don't try to parse JSON
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
