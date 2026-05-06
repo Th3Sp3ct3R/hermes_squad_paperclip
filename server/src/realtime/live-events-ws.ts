@@ -239,6 +239,11 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
+    // Skip paths handled by other WebSocket servers (e.g., Hermes voice)
+    if (req.url.startsWith("/api/hermes/")) {
+      return;
+    }
+
     const url = new URL(req.url, "http://localhost");
     const companyId = parseCompanyId(url.pathname);
     if (!companyId) {

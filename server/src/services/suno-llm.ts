@@ -25,11 +25,7 @@ const OPENROUTER_BASE =
   process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
 
 /**
- * Per-archangel default model. All :free for now per The Architect's directive.
- * Tunable per call via the {@link callOpenRouter} `model` option, and the
- * fallback can be overridden at process scope via OPENROUTER_MODEL. Per-agent
- * overrides come from `agents.runtimeConfig.model` (see runGenerate in the
- * suno-pipeline route).
+ * Per-archangel default model. Routes through OpenRouter.
  */
 export const SUNO_MODELS = {
   /** Zadkiel — lyrics, creative writing. */
@@ -48,17 +44,12 @@ const FALLBACK_MODEL =
 /**
  * Model fallback chain used when the primary model returns 429 (rate
  * limit) or 503 (provider unavailable). Tries each model in order until
- * one succeeds. MiniMax stays only as a last-ditch free option — for the
- * archangel LLM work we lead with paid-but-cheap Gemini Flash, then
- * Claude Haiku, then free fallbacks. MiniMax's music API is a separate
- * client that does not flow through this chain.
+ * one succeeds. All route through OpenRouter.
  */
 const LLM_FALLBACK_CHAIN: string[] = [
   "google/gemini-2.5-flash",
   "anthropic/claude-3.5-haiku",
   "openai/gpt-4o-mini",
-  "google/gemini-2.0-flash-exp:free",
-  "minimax/minimax-m2.5:free",
 ];
 
 interface ChatMessage {
@@ -104,31 +95,28 @@ export interface SunoLlmContext {
 }
 
 /**
- * Make a single chat-completion call to OpenRouter. Returns the assistant's
- * trimmed text content. Throws on auth failure, network error, or empty
- * response.
+ * Make a single chat-completion call. Routes to Kimi native API when the
+ * model starts with "kimi-" and KIMI_API_KEY is set; otherwise falls through
+ * to OpenRouter. Returns the assistant's trimmed text content.
  */
 export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> {
-  const key = process.env.OPENROUTER_API_KEY;
-  if ((opts.requireKey ?? true) && !key) {
+  const orKey = process.env.OPENROUTER_API_KEY;
+
+  if ((opts.requireKey ?? true) && !orKey) {
     throw new Error(
-      "OPENROUTER_API_KEY is not configured — set it in the server env to use suno generation",
+      "OPENROUTER_API_KEY is not configured — set it to use suno generation",
     );
   }
 
-  // If caller passed an explicit model, try it first then walk the chain.
-  // If they passed nothing, just walk the default chain.
   const requested = opts.model ?? FALLBACK_MODEL;
   const chain = [requested, ...LLM_FALLBACK_CHAIN.filter((m) => m !== requested)];
 
   let lastErr: unknown = null;
   for (const m of chain) {
     try {
-      return await callOpenRouterOnce({ ...opts, model: m }, key);
+      return await callOpenRouterOnce({ ...opts, model: m }, orKey);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Only fall through on rate-limit / unavailable / payment-needed errors.
-      // Real validation errors (400) should fail fast.
       const retryable = /\b(429|503|502|504|402|insufficient|rate.limit)\b/i.test(msg);
       if (!retryable) throw err;
       lastErr = err;

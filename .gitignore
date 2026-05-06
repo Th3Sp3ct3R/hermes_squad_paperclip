@@ -51,3 +51,8 @@ tests/e2e/playwright-report/
 server/[object Object]/
 .env.save
 .env.*.swp
+
+# Runtime data
+dashboard/
+logs/
+audio/

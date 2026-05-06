@@ -26,6 +26,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { initHermesVoiceWs } from "./hermes/voice-ws.js";
 import { startCassielWatcher } from "./services/cassiel-watcher.js";
 import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -511,6 +512,9 @@ export async function startServer(): Promise<StartedServer> {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
   });
+
+  // Hermes voice agent — full duplex voice conversation via WebSocket
+  initHermesVoiceWs(server);
 
   // Cassiel — Saturn-archangel of time, watcher of stuck batches. Scans
   // every 5 minutes for issues stuck in GENERATING with no audio, hard-

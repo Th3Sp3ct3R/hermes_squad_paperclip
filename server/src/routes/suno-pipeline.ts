@@ -24,7 +24,7 @@
  */
 import { Router, type Request } from "express";
 import { z } from "zod";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   sunoIssues,
@@ -838,6 +838,108 @@ export function sunoPipelineRoutes(db: Db) {
     });
 
     res.json(row);
+  });
+
+  // ── DELETE /suno-pipeline/:id ─────────────────────────────────────────────
+  // Hard-delete a track. Not recoverable. FAILED is the soft-delete equivalent
+  // — use this only when the user explicitly wants to dissolve a working.
+  router.delete("/suno-pipeline/:id", async (req, res) => {
+    const companyId = resolveCompanyId(req);
+    assertCompanyAccess(req, companyId);
+    const { id } = req.params;
+
+    const [existing] = await db
+      .select()
+      .from(sunoIssues)
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)))
+      .limit(1);
+
+    if (!existing) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
+    await db.delete(sunoIssues).where(eq(sunoIssues.id, id));
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.deleted",
+      entityType: "suno_issue",
+      entityId: id,
+      details: {
+        concept: existing.concept,
+        status: existing.status,
+        targetChakra: existing.targetChakra,
+      },
+    });
+
+    res.status(204).end();
+  });
+
+  // ── POST /suno-pipeline/bulk-transition ────────────────────────────────────
+  // Move multiple tracks to a target status in one call. Used for unsticking
+  // tracks stuck in GENERATING or bulk-dissolving FAILED tracks.
+  const bulkTransitionSchema = z.object({
+    body: z.object({
+      companyId: z.string().uuid(),
+      ids: z.array(z.string().uuid()).min(1).max(200),
+      targetStatus: z.enum(["DRAFT", "GENERATING", "REVIEW", "APPROVED", "PUBLISHED", "FAILED"]),
+      reason: z.string().optional(),
+    }),
+  });
+  router.post("/suno-pipeline/bulk-transition", validate(bulkTransitionSchema), async (req, res) => {
+    const { companyId, ids, targetStatus, reason } = req.body as z.infer<typeof bulkTransitionSchema>["body"];
+    assertCompanyAccess(req, companyId);
+
+    const rows = await db
+      .select({ id: sunoIssues.id, status: sunoIssues.status })
+      .from(sunoIssues)
+      .where(and(eq(sunoIssues.companyId, companyId), inArray(sunoIssues.id, ids)));
+
+    const validIds = rows.map((r) => r.id);
+    if (validIds.length === 0) {
+      res.status(404).json({ error: "No matching tracks found" });
+      return;
+    }
+
+    await db
+      .update(sunoIssues)
+      .set({
+        status: targetStatus as SunoStatus,
+        updatedAt: new Date(),
+        metadata: sql`jsonb_set(
+          COALESCE(${sunoIssues.metadata}, '{}'),
+          '{bulkTransition}',
+          ${JSON.stringify({ at: new Date().toISOString(), targetStatus, reason: reason ?? null })}::jsonb
+        )`,
+      })
+      .where(inArray(sunoIssues.id, validIds));
+
+    const actor = getActorInfo(req);
+    for (const row of rows) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.bulk_transition",
+        entityType: "suno_issue",
+        entityId: row.id,
+        details: {
+          previousStatus: row.status,
+          targetStatus,
+          reason: reason ?? null,
+        },
+      });
+    }
+
+    res.json({ transitioned: validIds.length, ids: validIds });
   });
 
   // ── POST /suno-pipeline/backfill-issues ───────────────────────────────────
@@ -2043,23 +2145,29 @@ export function sunoPipelineRoutes(db: Db) {
     "/suno-pipeline/day-plan/parse",
     validate(dayPlanParseSchema),
     async (req, res) => {
-      const body = req.body as z.infer<typeof dayPlanParseSchema>;
-      assertCompanyAccess(req, body.companyId);
-      const actor = getActorInfo(req);
-      const plan = await parseDayPlan(
-        { request: body.request },
-        { db, companyId: body.companyId, agentId: actor.agentId },
-      );
-      // Decorate each block with the ruling angel so the UI doesn't need
-      // its own copy of the chakra-angel registry.
-      const decorated = {
-        ...plan,
-        blocks: plan.blocks.map((b) => ({
-          ...b,
-          rulingAngel: CHAKRA_ANGEL[b.targetChakra],
-        })),
-      };
-      res.json(decorated);
+      try {
+        const body = req.body as z.infer<typeof dayPlanParseSchema>;
+        assertCompanyAccess(req, body.companyId);
+        const actor = getActorInfo(req);
+        const plan = await parseDayPlan(
+          { request: body.request },
+          { db, companyId: body.companyId, agentId: actor.agentId },
+        );
+        // Decorate each block with the ruling angel so the UI doesn't need
+        // its own copy of the chakra-angel registry.
+        const decorated = {
+          ...plan,
+          blocks: plan.blocks.map((b) => ({
+            ...b,
+            rulingAngel: CHAKRA_ANGEL[b.targetChakra],
+          })),
+        };
+        res.json(decorated);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        logger.error({ err }, "[day-plan/parse] failed");
+        res.status(500).json({ error: message });
+      }
     },
   );
 

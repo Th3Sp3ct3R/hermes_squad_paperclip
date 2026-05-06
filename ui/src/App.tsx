@@ -23,6 +23,7 @@ import { Costs } from "./pages/Costs";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { HermesFeed } from "./pages/HermesFeed";
+import { HermesChat } from "./pages/HermesChat";
 import { SunoPipeline } from "./pages/SunoPipeline";
 import InitiatesPath from "./pages/InitiatesPath";
 import { CompanySettings } from "./pages/CompanySettings";
@@ -117,6 +118,7 @@ function boardRoutes() {
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="hermes" element={<HermesFeed />} />
+      <Route path="hermes/chat" element={<HermesChat />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />

@@ -11,7 +11,7 @@ import { logger } from "../middleware/logger.js";
 
 export interface LogUsageParams {
   companyId: string;
-  provider: "openrouter" | "minimax" | "cover-art";
+  provider: "openrouter" | "minimax" | "cover-art" | "kimi";
   model: string;
   callType: "llm" | "music" | "image";
   stage?: string;

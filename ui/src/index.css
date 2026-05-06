@@ -204,6 +204,54 @@
 .draw { stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: draw 1.6s ease-out forwards; }
 @keyframes draw { to { stroke-dashoffset: 0; } }
 
+/* ── Tree of Life ambient light animations ─────────────────────────────────── */
+
+/* Breathing glow: SVG container pulses between 4% and 8% opacity over 8s */
+@keyframes treeGlow {
+  0%, 100% { opacity: 0.04; }
+  50%       { opacity: 0.08; }
+}
+
+/* Path flow: a single bright dash travels the length of each line.
+   The stroke-dasharray is set per-element; this keyframe advances the offset
+   so the highlight sweeps from start to end and disappears before looping. */
+@keyframes pathFlow {
+  0%   { stroke-dashoffset: var(--path-len); opacity: 0; }
+  8%   { opacity: 1; }
+  85%  { opacity: 0.7; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+/* Sephiroth radial pulse — a brief brightness flare when "light arrives" */
+@keyframes sephPulse {
+  0%, 100% { filter: drop-shadow(0 0 0px rgba(255,255,255,0)); opacity: 1; }
+  50%       { filter: drop-shadow(0 0 6px rgba(255,255,255,0.9)); opacity: 1.5; }
+}
+
+/* Container class: breathing glow + performance hint */
+.tree-of-life-glow {
+  animation: treeGlow 8s ease-in-out infinite;
+  will-change: opacity;
+}
+
+/* Path (line) flow class — each line carries inline --path-len and animation-delay */
+.tree-path-flow {
+  animation: pathFlow 8s ease-in-out infinite;
+  stroke-linecap: round;
+}
+
+/* Sephiroth pulse class — inline animation-delay fires when light "arrives" */
+.tree-seph-pulse {
+  animation: sephPulse 8s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-of-life-glow  { animation: none; opacity: 0.04; }
+  .tree-path-flow     { animation: none; }
+  .tree-seph-pulse    { animation: none; }
+}
+
 /* card entry animation */
 @keyframes card-rise { to { opacity: 1; transform: none; } }
 

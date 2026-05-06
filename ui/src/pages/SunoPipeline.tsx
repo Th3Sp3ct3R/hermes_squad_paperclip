@@ -12,9 +12,9 @@
  * The page reads from /api/suno-pipeline (TanStack Query) and writes via
  * the same client. Mutations go through the standard activity-log pipeline.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, X, Sparkles, Layers } from "lucide-react";
+import { Plus, X, Sparkles, Layers, ScrollText, Trash2 } from "lucide-react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
@@ -360,6 +360,30 @@ export function SunoPipeline() {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => {
+      if (!selectedCompanyId) throw new Error("No company selected");
+      return sunoPipelineApi.delete(id, selectedCompanyId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: sunoQueryKey(selectedCompanyId ?? "_"),
+      });
+    },
+  });
+
+  const bulkDissolveMutation = useMutation({
+    mutationFn: (ids: string[]) => {
+      if (!selectedCompanyId) throw new Error("No company selected");
+      return sunoPipelineApi.bulkTransition(selectedCompanyId, ids, "FAILED", "bulk dissolve");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: sunoQueryKey(selectedCompanyId ?? "_"),
+      });
+    },
+  });
+
   const grouped = useMemo(() => {
     const buckets: Record<SunoStatus, SunoIssue[]> = {
       DRAFT: [],
@@ -654,6 +678,8 @@ export function SunoPipeline() {
               onChangeStatus={(id, next) =>
                 updateMutation.mutate({ id, status: next })
               }
+              onDelete={(id) => deleteMutation.mutate(id)}
+              onBulkDissolve={(ids) => bulkDissolveMutation.mutate(ids)}
             />
           ))}
         </div>
@@ -807,10 +833,15 @@ interface SunoColumnProps {
   issues: SunoIssue[];
   agentNameById: Map<string, string>;
   onChangeStatus: (id: string, next: SunoStatus) => void;
+  onDelete?: (id: string) => void;
+  onBulkDissolve?: (ids: string[]) => void;
 }
 
-function SunoColumn({ status, issues, agentNameById, onChangeStatus }: SunoColumnProps) {
+function SunoColumn({ status, issues, agentNameById, onChangeStatus, onDelete, onBulkDissolve }: SunoColumnProps) {
   const opus = STATUS_OPUS_COLOR[status];
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const showBulkActions = (status === "GENERATING" || status === "FAILED") && issues.length > 1;
+
   return (
     <div className="flex flex-col min-w-0">
       <div
@@ -821,8 +852,32 @@ function SunoColumn({ status, issues, agentNameById, onChangeStatus }: SunoColum
           <span aria-hidden style={{ filter: "drop-shadow(0 0 2px " + opus.bg + ")" }}>{opus.glyph}</span>
           {STATUS_LABEL[status]}
         </span>
-        <span className="text-xs text-muted-foreground/60 tabular-nums">
-          {issues.length}
+        <span className="flex items-center gap-1.5">
+          {showBulkActions && onBulkDissolve && !confirmBulk && (
+            <button
+              onClick={() => setConfirmBulk(true)}
+              className="text-[9px] text-muted-foreground hover:text-red-500 transition-colors"
+              title={`Dissolve all ${issues.length} tracks`}
+            >
+              dissolve all
+            </button>
+          )}
+          {confirmBulk && (
+            <span className="flex items-center gap-1">
+              <button
+                onClick={() => { onBulkDissolve!(issues.map(i => i.id)); setConfirmBulk(false); }}
+                className="text-[9px] text-red-500 font-medium"
+              >
+                confirm ({issues.length})
+              </button>
+              <button onClick={() => setConfirmBulk(false)} className="text-[9px] text-muted-foreground">
+                cancel
+              </button>
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground/60 tabular-nums">
+            {issues.length}
+          </span>
         </span>
       </div>
       <div
@@ -842,6 +897,7 @@ function SunoColumn({ status, issues, agentNameById, onChangeStatus }: SunoColum
               issue={issue}
               agentNameById={agentNameById}
               onChangeStatus={onChangeStatus}
+              onDelete={onDelete}
             />
           ))
         )}
@@ -854,10 +910,13 @@ interface SunoCardProps {
   issue: SunoIssue;
   agentNameById: Map<string, string>;
   onChangeStatus: (id: string, next: SunoStatus) => void;
+  onDelete?: (id: string) => void;
 }
 
-function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
+function SunoCard({ issue, agentNameById, onChangeStatus, onDelete }: SunoCardProps) {
   const queryClient = useQueryClient();
+  const [showPrompts, setShowPrompts] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const assigned = [
     issue.lyricsAgentId && agentNameById.get(issue.lyricsAgentId),
@@ -983,21 +1042,106 @@ function SunoCard({ issue, agentNameById, onChangeStatus }: SunoCardProps) {
           )}
         </div>
       )}
-      <Select
-        value={issue.status}
-        onValueChange={(v) => onChangeStatus(issue.id, v as SunoStatus)}
-      >
-        <SelectTrigger className="h-6 text-[11px] py-0 px-2">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {SUNO_BOARD_COLUMNS.map((s) => (
-            <SelectItem key={s} value={s}>
-              {STATUS_LABEL[s]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      {/* ── Prompt Viewer (stages) ── */}
+      {(() => {
+        const stages = (issue.metadata as { stages?: Record<string, string> })?.stages;
+        const hasAny = stages && (stages.soundPrompt || stages.lyrics || stages.visualPrompt);
+        if (!hasAny && issue.status === "DRAFT") return null;
+        return (
+          <div className="pt-0.5">
+            <button
+              onClick={() => setShowPrompts(!showPrompts)}
+              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors w-full"
+            >
+              <ScrollText className="h-3 w-3 shrink-0" />
+              <span className="flex gap-1">
+                <span className={stages?.soundPrompt ? "text-emerald-500" : "opacity-30"} title="Uriel (Sound)">U</span>
+                <span className={stages?.lyrics ? "text-emerald-500" : "opacity-30"} title="Zadkiel (Lyrics)">Z</span>
+                <span className={stages?.visualPrompt ? "text-emerald-500" : "opacity-30"} title="Jophiel (Visual)">J</span>
+              </span>
+              <span className="ml-auto text-[9px]">{showPrompts ? "hide" : "prompts"}</span>
+            </button>
+            {showPrompts && stages && (
+              <div className="mt-1 space-y-1.5 text-[10px] leading-tight">
+                {stages.soundPrompt && (
+                  <div>
+                    <span className="font-medium text-muted-foreground">Uriel:</span>
+                    <p className="text-foreground/80 mt-0.5 whitespace-pre-wrap break-words max-h-20 overflow-y-auto scrollbar-auto-hide">
+                      {stages.soundPrompt}
+                    </p>
+                  </div>
+                )}
+                {stages.lyrics && (
+                  <div>
+                    <span className="font-medium text-muted-foreground">Zadkiel:</span>
+                    <p className="text-foreground/80 mt-0.5 whitespace-pre-wrap break-words max-h-20 overflow-y-auto scrollbar-auto-hide">
+                      {stages.lyrics}
+                    </p>
+                  </div>
+                )}
+                {stages.visualPrompt && (
+                  <div>
+                    <span className="font-medium text-muted-foreground">Jophiel:</span>
+                    <p className="text-foreground/80 mt-0.5 whitespace-pre-wrap break-words max-h-20 overflow-y-auto scrollbar-auto-hide">
+                      {stages.visualPrompt}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+      {/* ── Status + Delete row ── */}
+      <div className="flex items-center gap-1">
+        <Select
+          value={issue.status}
+          onValueChange={(v) => onChangeStatus(issue.id, v as SunoStatus)}
+        >
+          <SelectTrigger className="h-6 text-[11px] py-0 px-2 flex-1">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SUNO_BOARD_COLUMNS.map((s) => (
+              <SelectItem key={s} value={s}>
+                {STATUS_LABEL[s]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {onDelete && (
+          confirmDelete ? (
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={() => { onDelete(issue.id); setConfirmDelete(false); }}
+                className="text-[9px] text-red-500 hover:text-red-400 font-medium px-1"
+              >
+                dissolve
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="text-[9px] text-muted-foreground hover:text-foreground px-1"
+              >
+                keep
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="text-muted-foreground hover:text-red-500 transition-colors shrink-0"
+              title="Dissolve this working"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          )
+        )}
+      </div>
+      {/* ── Cover art prompt overlay ── */}
+      {issue.thumbnailUrl && showPrompts && (issue.metadata as { stages?: Record<string, string> })?.stages?.visualPrompt && (
+        <div className="text-[9px] text-muted-foreground italic -mt-0.5">
+          Cover generated from Jophiel's prompt above
+        </div>
+      )}
     </div>
   );
 }
@@ -1045,6 +1189,15 @@ function EmptyVariantRow({ label, source }: { label: "A" | "B"; source: "Suno" |
   );
 }
 
+// ── Global audio singleton — only one track plays at a time ──────────────
+let _currentlyPlaying: HTMLAudioElement | null = null;
+function registerAudioPlay(el: HTMLAudioElement) {
+  if (_currentlyPlaying && _currentlyPlaying !== el) {
+    _currentlyPlaying.pause();
+  }
+  _currentlyPlaying = el;
+}
+
 function AudioVariantRow({
   label,
   source,
@@ -1057,6 +1210,14 @@ function AudioVariantRow({
   // Falls back to a slow sine oscillation when CORS blocks AudioContext
   // analysis (most cross-origin Suno/MiniMax URLs).
   const { playing, amplitude, setAudioRef } = useAudioAmplitude();
+
+  // Wrap the audio ref to hook into the global singleton
+  const audioCallbackRef = useCallback((el: HTMLAudioElement | null) => {
+    setAudioRef(el);
+    if (el) {
+      el.addEventListener("play", () => registerAudioPlay(el));
+    }
+  }, [setAudioRef]);
 
   // Map amplitude (0..1) to a subtle scale (1.0..1.18) and glow intensity.
   const scale = 1 + amplitude * 0.18;
@@ -1085,7 +1246,7 @@ function AudioVariantRow({
         {label}
       </button>
       <audio
-        ref={setAudioRef}
+        ref={audioCallbackRef}
         src={src}
         controls
         preload="none"

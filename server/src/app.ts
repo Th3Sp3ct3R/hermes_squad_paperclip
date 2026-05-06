@@ -25,6 +25,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { sunoPipelineRoutes } from "./routes/suno-pipeline.js";
+import { hermesChatRouter } from "./routes/hermes-chat.js";
 import { usageStatsRoutes } from "./routes/usage-stats.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -227,6 +228,7 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
+  app.use(hermesChatRouter);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });

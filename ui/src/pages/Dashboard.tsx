@@ -25,9 +25,11 @@ import { CaduceusMark } from "@/components/CaduceusMark";
 import { HermeticPanelsRow } from "@/components/dashboard/HermeticPanels";
 import { MechanismRow } from "@/components/dashboard/HermeticMechanism";
 import { TelemetryRow } from "@/components/dashboard/HermeticTelemetry";
+import { HermeticLegendButton, HermeticLegendDrawer } from "@/components/dashboard/HermeticLegend";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { WorkspacePulse } from "../components/dashboard/WorkspacePulse";
 import { AgentActivityBar } from "../components/dashboard/AgentActivityBar";
+import { HermesVoice } from "../components/HermesVoice";
 import type { Agent, Issue } from "@paperclipai/shared";
 import type { ArchangelName } from "@/components/SacredGeometry";
 
@@ -269,6 +271,7 @@ export function Dashboard() {
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
+  const [legendOpen, setLegendOpen] = useState(false);
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
@@ -436,10 +439,18 @@ export function Dashboard() {
     <div className="space-y-6">
       {/* Hermetic axiom — Tabula Smaragdina, sets the frame for everything below */}
       <header
-        className="text-center font-serif italic text-[11px] uppercase tracking-[0.4em] text-muted-foreground/50 py-1 select-none"
+        className="flex items-center justify-center gap-3 py-1"
         title="Tabula Smaragdina — As above, so below"
       >
-        Quod est superius est sicut quod est inferius
+        <span className="font-serif italic text-[11px] uppercase tracking-[0.4em] text-muted-foreground/50 select-none">
+          Quod est superius est sicut quod est inferius
+        </span>
+        <HermeticLegendButton onClick={() => setLegendOpen(true)} />
+        <HermeticLegendDrawer
+          open={legendOpen}
+          onOpenChange={setLegendOpen}
+          withTrigger={false}
+        />
       </header>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -703,6 +714,9 @@ export function Dashboard() {
           </div>
         </>
       )}
+
+      {/* ── Hermes Voice Orb — floating, bottom-right ── */}
+      <HermesVoice preset="narration" className="fixed bottom-6 right-6 z-50" />
     </div>
   );
 }

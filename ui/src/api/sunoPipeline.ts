@@ -201,6 +201,16 @@ export const sunoPipelineApi = {
       withQuery(`/suno-pipeline/${encodeURIComponent(id)}`, { companyId }),
       { companyId, ...input },
     ),
+  /** Hard-delete a track. Returns 204 on success. */
+  delete: (id: string, companyId: string) =>
+    api.delete<void>(
+      withQuery(`/suno-pipeline/${encodeURIComponent(id)}`, { companyId }),
+    ),
+  /** Bulk-transition multiple tracks to a target status. */
+  bulkTransition: (companyId: string, ids: string[], targetStatus: SunoStatus, reason?: string) =>
+    api.post<{ transitioned: number; ids: string[] }>("/suno-pipeline/bulk-transition", {
+      companyId, ids, targetStatus, reason,
+    }),
 
   // ── State machine (Phase 7) ─────────────────────────────────────────────
   /** Michael assigns the three creative agents. Pre: status === DRAFT. */

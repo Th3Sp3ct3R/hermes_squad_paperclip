@@ -283,10 +283,12 @@ export function CompanyRail() {
         ) : null;
       })()}
 
-      {/* Paperclip icon */}
-      <div className="flex items-center justify-center h-10 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-muted-foreground" />
-      </div>
+      {/* Paperclip icon — only show when no company is selected (avoids double-icon) */}
+      {!selectedCompanyId && (
+        <div className="flex items-center justify-center h-10 w-full shrink-0">
+          <Paperclip className="h-5 w-5 text-muted-foreground" />
+        </div>
+      )}
 
       {/* Company list */}
       <div className="flex-1 flex flex-col items-center gap-2 py-3 w-full overflow-y-auto overflow-x-hidden scrollbar-none">

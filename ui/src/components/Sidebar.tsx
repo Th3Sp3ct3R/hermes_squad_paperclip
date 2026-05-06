@@ -54,45 +54,152 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col relative overflow-hidden">
-      {/* Tree of Life — glowing background watermark */}
+      {/* Tree of Life — animated ambient light watermark */}
+      {/* treeGlow breathes the whole SVG 4%→8%→4% over 8s.             */}
+      {/* Each path carries a traveling-light dash (pathFlow) with a     */}
+      {/* sequential delay so energy descends Keter → Malkuth.           */}
+      {/* Sephiroth circles pulse (sephPulse) when the light arrives.    */}
       <svg
         viewBox="0 0 200 320"
         fill="none"
-        className="absolute inset-x-0 bottom-0 w-full pointer-events-none opacity-[0.04]"
+        className="tree-of-life-glow absolute inset-x-0 bottom-0 w-full pointer-events-none"
         style={{ filter: "drop-shadow(0 0 8px rgba(255,255,255,0.3))" }}
         aria-hidden="true"
       >
-        {/* 10 Sephiroth (spheres) */}
-        <circle cx="100" cy="20"  r="12" stroke="#fff" strokeWidth="1.5" /> {/* Keter */}
-        <circle cx="65"  cy="60"  r="10" stroke="#fff" strokeWidth="1.5" /> {/* Chokmah */}
-        <circle cx="135" cy="60"  r="10" stroke="#fff" strokeWidth="1.5" /> {/* Binah */}
-        <circle cx="65"  cy="120" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Chesed */}
-        <circle cx="135" cy="120" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Geburah */}
-        <circle cx="100" cy="150" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Tiphareth */}
-        <circle cx="65"  cy="200" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Netzach */}
-        <circle cx="135" cy="200" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Hod */}
-        <circle cx="100" cy="240" r="10" stroke="#fff" strokeWidth="1.5" /> {/* Yesod */}
-        <circle cx="100" cy="300" r="12" stroke="#fff" strokeWidth="1.5" /> {/* Malkuth */}
-        {/* 22 Paths (connecting lines) */}
-        <line x1="100" y1="32" x2="65"  y2="50"  stroke="#fff" strokeWidth="1" /> {/* Keter-Chokmah */}
-        <line x1="100" y1="32" x2="135" y2="50"  stroke="#fff" strokeWidth="1" /> {/* Keter-Binah */}
-        <line x1="65"  y1="60" x2="135" y2="60"  stroke="#fff" strokeWidth="1" /> {/* Chokmah-Binah */}
-        <line x1="65"  y1="70" x2="65"  y2="110" stroke="#fff" strokeWidth="1" /> {/* Chokmah-Chesed */}
-        <line x1="135" y1="70" x2="135" y2="110" stroke="#fff" strokeWidth="1" /> {/* Binah-Geburah */}
-        <line x1="65"  y1="70" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Chokmah-Tiphareth */}
-        <line x1="135" y1="70" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Binah-Tiphareth */}
-        <line x1="65"  y1="120" x2="135" y2="120" stroke="#fff" strokeWidth="1" /> {/* Chesed-Geburah */}
-        <line x1="65"  y1="130" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Chesed-Tiphareth */}
-        <line x1="135" y1="130" x2="100" y2="140" stroke="#fff" strokeWidth="1" /> {/* Geburah-Tiphareth */}
-        <line x1="65"  y1="130" x2="65"  y2="190" stroke="#fff" strokeWidth="1" /> {/* Chesed-Netzach */}
-        <line x1="135" y1="130" x2="135" y2="190" stroke="#fff" strokeWidth="1" /> {/* Geburah-Hod */}
-        <line x1="100" y1="160" x2="65"  y2="190" stroke="#fff" strokeWidth="1" /> {/* Tiphareth-Netzach */}
-        <line x1="100" y1="160" x2="135" y2="190" stroke="#fff" strokeWidth="1" /> {/* Tiphareth-Hod */}
-        <line x1="100" y1="160" x2="100" y2="230" stroke="#fff" strokeWidth="1" /> {/* Tiphareth-Yesod */}
-        <line x1="65"  y1="200" x2="135" y2="200" stroke="#fff" strokeWidth="1" /> {/* Netzach-Hod */}
-        <line x1="65"  y1="210" x2="100" y2="230" stroke="#fff" strokeWidth="1" /> {/* Netzach-Yesod */}
-        <line x1="135" y1="210" x2="100" y2="230" stroke="#fff" strokeWidth="1" /> {/* Hod-Yesod */}
-        <line x1="100" y1="250" x2="100" y2="288" stroke="#fff" strokeWidth="1" /> {/* Yesod-Malkuth */}
+        {/* 10 Sephiroth — pulse delays keyed to when the traveling light arrives */}
+        {/* Keter — tier 0, light originates here */}
+        <circle cx="100" cy="20"  r="12" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "0s" }} />
+        {/* Chokmah / Binah — tier 1 (delay ~0.5s) */}
+        <circle cx="65"  cy="60"  r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "0.5s" }} />
+        <circle cx="135" cy="60"  r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "0.5s" }} />
+        {/* Chesed / Geburah — tier 2 (delay ~1.2s) */}
+        <circle cx="65"  cy="120" r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "1.2s" }} />
+        <circle cx="135" cy="120" r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "1.2s" }} />
+        {/* Tiphareth — tier 3 (delay ~2.0s) */}
+        <circle cx="100" cy="150" r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "2.0s" }} />
+        {/* Netzach / Hod — tier 4 (delay ~3.0s) */}
+        <circle cx="65"  cy="200" r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "3.0s" }} />
+        <circle cx="135" cy="200" r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "3.0s" }} />
+        {/* Yesod — tier 5 (delay ~4.0s) */}
+        <circle cx="100" cy="240" r="10" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "4.0s" }} />
+        {/* Malkuth — tier 6 (delay ~5.0s) */}
+        <circle cx="100" cy="300" r="12" stroke="#fff" strokeWidth="1.5"
+          className="tree-seph-pulse"
+          style={{ animationDelay: "5.0s" }} />
+
+        {/* 19 Paths — traveling light dashes, staggered top→bottom            */}
+        {/* stroke-dasharray = "highlight-len path-len" where highlight ≈ 30%   */}
+        {/* --path-len CSS var drives the keyframe start offset                 */}
+
+        {/* Tier 0→1: from Keter downward (delays 0–0.4s) */}
+        {/* Keter-Chokmah  len≈39 */}
+        <line x1="100" y1="32" x2="65"  y2="50"  stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "12 39", ["--path-len" as string]: "39", animationDelay: "0s" }} />
+        {/* Keter-Binah  len≈39 */}
+        <line x1="100" y1="32" x2="135" y2="50"  stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "12 39", ["--path-len" as string]: "39", animationDelay: "0.15s" }} />
+
+        {/* Tier 1 horizontal: Chokmah-Binah  len=70 */}
+        <line x1="65"  y1="60" x2="135" y2="60"  stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "21 70", ["--path-len" as string]: "70", animationDelay: "0.5s" }} />
+
+        {/* Tier 1→2: vertical pillars and cross-paths (delays 0.6–1.1s) */}
+        {/* Chokmah-Chesed  len=40 */}
+        <line x1="65"  y1="70" x2="65"  y2="110" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "12 40", ["--path-len" as string]: "40", animationDelay: "0.6s" }} />
+        {/* Binah-Geburah  len=40 */}
+        <line x1="135" y1="70" x2="135" y2="110" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "12 40", ["--path-len" as string]: "40", animationDelay: "0.6s" }} />
+        {/* Chokmah-Tiphareth  len≈78 */}
+        <line x1="65"  y1="70" x2="100" y2="140" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "23 78", ["--path-len" as string]: "78", animationDelay: "0.9s" }} />
+        {/* Binah-Tiphareth  len≈78 */}
+        <line x1="135" y1="70" x2="100" y2="140" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "23 78", ["--path-len" as string]: "78", animationDelay: "0.9s" }} />
+
+        {/* Tier 2 horizontal: Chesed-Geburah  len=70 */}
+        <line x1="65"  y1="120" x2="135" y2="120" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "21 70", ["--path-len" as string]: "70", animationDelay: "1.2s" }} />
+
+        {/* Tier 2→3: into Tiphareth (delays 1.4–1.9s) */}
+        {/* Chesed-Tiphareth  len≈36 */}
+        <line x1="65"  y1="130" x2="100" y2="140" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "11 36", ["--path-len" as string]: "36", animationDelay: "1.5s" }} />
+        {/* Geburah-Tiphareth  len≈36 */}
+        <line x1="135" y1="130" x2="100" y2="140" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "11 36", ["--path-len" as string]: "36", animationDelay: "1.5s" }} />
+
+        {/* Tier 2→4: pillar side-channels (delays 1.8–2.2s) */}
+        {/* Chesed-Netzach  len=60 */}
+        <line x1="65"  y1="130" x2="65"  y2="190" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "18 60", ["--path-len" as string]: "60", animationDelay: "1.8s" }} />
+        {/* Geburah-Hod  len=60 */}
+        <line x1="135" y1="130" x2="135" y2="190" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "18 60", ["--path-len" as string]: "60", animationDelay: "1.8s" }} />
+
+        {/* Tier 3→4: from Tiphareth outward (delays 2.2–2.8s) */}
+        {/* Tiphareth-Netzach  len≈46 */}
+        <line x1="100" y1="160" x2="65"  y2="190" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "14 46", ["--path-len" as string]: "46", animationDelay: "2.2s" }} />
+        {/* Tiphareth-Hod  len≈46 */}
+        <line x1="100" y1="160" x2="135" y2="190" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "14 46", ["--path-len" as string]: "46", animationDelay: "2.2s" }} />
+        {/* Tiphareth-Yesod  len=70 */}
+        <line x1="100" y1="160" x2="100" y2="230" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "21 70", ["--path-len" as string]: "70", animationDelay: "2.5s" }} />
+
+        {/* Tier 4 horizontal: Netzach-Hod  len=70 */}
+        <line x1="65"  y1="200" x2="135" y2="200" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "21 70", ["--path-len" as string]: "70", animationDelay: "3.0s" }} />
+
+        {/* Tier 4→5: into Yesod (delays 3.3–3.6s) */}
+        {/* Netzach-Yesod  len≈40 */}
+        <line x1="65"  y1="210" x2="100" y2="230" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "12 40", ["--path-len" as string]: "40", animationDelay: "3.4s" }} />
+        {/* Hod-Yesod  len≈40 */}
+        <line x1="135" y1="210" x2="100" y2="230" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "12 40", ["--path-len" as string]: "40", animationDelay: "3.4s" }} />
+
+        {/* Tier 5→6: Yesod-Malkuth  len=38 — the final descent */}
+        <line x1="100" y1="250" x2="100" y2="288" stroke="#fff" strokeWidth="1"
+          className="tree-path-flow"
+          style={{ strokeDasharray: "11 38", ["--path-len" as string]: "38", animationDelay: "4.5s" }} />
       </svg>
 
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
@@ -148,6 +255,7 @@ export function Sidebar() {
           <SidebarNavItem to="/issues" label="The Workings" icon={GLYPH.MERCURY} />
           <SidebarNavItem to="/goals" label="The Intentions" icon={GLYPH.JUPITER} />
           <SidebarNavItem to="/suno" label="The Hermetica" icon={GLYPH.SULPHUR} />
+          <SidebarNavItem to="/hermes/chat" label="Hermes" icon="☿" />
         </SidebarSection>
 
         <SidebarProjects />
