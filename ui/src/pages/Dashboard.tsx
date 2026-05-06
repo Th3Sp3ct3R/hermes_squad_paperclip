@@ -657,6 +657,9 @@ export function Dashboard() {
             }
           />
 
+          {/* ── Songs Metrics · Frequency Distribution ─────────────── */}
+          <SongsMetricsPanel companyId={selectedCompanyId!} />
+
           {/* ── 4. Recent Tasks ───────────────────────────────────────── */}
           <div className="min-w-0">
             <h3 className="seclabel r mb-3">
