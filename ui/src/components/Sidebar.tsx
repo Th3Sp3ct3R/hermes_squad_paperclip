@@ -254,7 +254,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="The Workings" icon={GLYPH.MERCURY} />
           <SidebarNavItem to="/goals" label="The Intentions" icon={GLYPH.JUPITER} />
-          <SidebarNavItem to="/suno" label="The Hermetica" icon={GLYPH.SULPHUR} />
+          <SidebarNavItem to="/music" label="Music" icon={GLYPH.SULPHUR} />
           <SidebarNavItem to="/hermes/chat" label="Hermes" icon="☿" />
         </SidebarSection>
 
