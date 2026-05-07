@@ -248,3 +248,24 @@ export const CassielInput = z.object({
   time_signature: TimeSignature.optional()
     .describe("Musical time signature for rhythmic alignment"),
 });
+
+// ─────────────────────────────────────────────────────────────
+// Azrael — OSINT Person Lookup / The Watcher
+// CHEAP tier. Pure data retrieval — no LLM call.
+// Scrapes people-search sites for contact intel.
+// ─────────────────────────────────────────────────────────────
+
+export const OsintDepth = z.enum([
+  "quick", "standard", "deep",
+]).describe("quick = scrape only, standard = scrape + service check, deep = scrape + service check + username enum");
+
+export const AzraelInput = z.object({
+  full_name: z.string().min(3).describe("Full legal name to investigate"),
+  location: z.string().optional()
+    .describe("City, state to narrow results (e.g. 'New York, NY')"),
+  depth: OsintDepth.default("standard"),
+  include_service_check: z.boolean().default(true)
+    .describe("Run holehe on discovered emails to find registered services"),
+  max_results: z.number().int().min(1).max(10).default(5)
+    .describe("Max people results to return from scrape"),
+});

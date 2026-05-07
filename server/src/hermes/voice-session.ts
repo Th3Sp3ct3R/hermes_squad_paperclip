@@ -221,7 +221,7 @@ export class HermesVoiceSession {
         "X-Title": "Paperclip Hermes Voice",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash-preview",
+        model: "openrouter/auto",
         messages: this.history,
         max_tokens: 200, // Keep responses short for voice
         temperature: 0.7,

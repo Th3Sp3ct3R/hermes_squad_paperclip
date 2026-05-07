@@ -50,6 +50,7 @@ export function usageStatsRoutes(db: Db) {
         model: usageLogs.model,
         calls: sql<number>`count(*)::int`,
         tokens: sql<number>`coalesce(sum(${usageLogs.tokensTotal}), 0)::int`,
+        costCents: sql<number>`coalesce(sum(${usageLogs.costCents}), 0)::int`,
       })
       .from(usageLogs)
       .where(
@@ -67,6 +68,7 @@ export function usageStatsRoutes(db: Db) {
         date: sql<string>`to_char(${usageLogs.createdAt}::date, 'YYYY-MM-DD')`,
         tokens: sql<number>`coalesce(sum(${usageLogs.tokensTotal}), 0)::int`,
         calls: sql<number>`count(*)::int`,
+        costCents: sql<number>`coalesce(sum(${usageLogs.costCents}), 0)::int`,
       })
       .from(usageLogs)
       .where(
@@ -77,6 +79,26 @@ export function usageStatsRoutes(db: Db) {
       )
       .groupBy(sql`${usageLogs.createdAt}::date`)
       .orderBy(sql`${usageLogs.createdAt}::date`);
+
+    // By provider (for provider health strip)
+    const byProvider = await db
+      .select({
+        provider: usageLogs.provider,
+        calls: sql<number>`count(*)::int`,
+        successes: sql<number>`coalesce(sum(case when ${usageLogs.success} = 1 then 1 else 0 end), 0)::int`,
+        failures: sql<number>`coalesce(sum(case when ${usageLogs.success} = 0 then 1 else 0 end), 0)::int`,
+        avgDurationMs: sql<number>`coalesce(avg(${usageLogs.durationMs}), 0)::int`,
+        costCents: sql<number>`coalesce(sum(${usageLogs.costCents}), 0)::int`,
+      })
+      .from(usageLogs)
+      .where(
+        and(
+          eq(usageLogs.companyId, companyId),
+          gte(usageLogs.createdAt, since),
+        ),
+      )
+      .groupBy(usageLogs.provider)
+      .orderBy(desc(sql`count(*)`));
 
     const totalTokensIn = Number(totals?.totalTokensIn ?? 0);
     const totalTokensCached = Number(totals?.totalTokensCached ?? 0);
@@ -93,11 +115,21 @@ export function usageStatsRoutes(db: Db) {
         model: r.model,
         calls: Number(r.calls),
         tokens: Number(r.tokens),
+        costCents: Number(r.costCents),
       })),
       byDay: byDay.map((r) => ({
         date: r.date,
         tokens: Number(r.tokens),
         calls: Number(r.calls),
+        costCents: Number(r.costCents),
+      })),
+      byProvider: byProvider.map((r) => ({
+        provider: r.provider,
+        calls: Number(r.calls),
+        successes: Number(r.successes),
+        failures: Number(r.failures),
+        avgDurationMs: Number(r.avgDurationMs),
+        costCents: Number(r.costCents),
       })),
       cacheHitRate,
     });

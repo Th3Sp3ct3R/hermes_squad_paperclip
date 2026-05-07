@@ -4,8 +4,16 @@ export interface UsageStats {
   totalTokens: number;
   totalCalls: number;
   totalCostCents: number;
-  byModel: { model: string; calls: number; tokens: number }[];
-  byDay: { date: string; tokens: number; calls: number }[];
+  byModel: { model: string; calls: number; tokens: number; costCents: number }[];
+  byDay: { date: string; tokens: number; calls: number; costCents: number }[];
+  byProvider: {
+    provider: string;
+    calls: number;
+    successes: number;
+    failures: number;
+    avgDurationMs: number;
+    costCents: number;
+  }[];
   cacheHitRate: number;
 }
 

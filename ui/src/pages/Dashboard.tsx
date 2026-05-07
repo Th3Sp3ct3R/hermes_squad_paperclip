@@ -8,6 +8,7 @@ import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { usageStatsApi } from "../api/usageStats";
+import { costsApi } from "../api/costs";
 import { sunoPipelineApi, SUNO_CHAKRA_FREQUENCIES } from "../api/sunoPipeline";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -29,6 +30,9 @@ import { HermeticLegendButton, HermeticLegendDrawer } from "@/components/dashboa
 import { PageSkeleton } from "../components/PageSkeleton";
 import { WorkspacePulse } from "../components/dashboard/WorkspacePulse";
 import { AgentActivityBar } from "../components/dashboard/AgentActivityBar";
+import { CostLedger } from "../components/dashboard/CostLedger";
+import { ArchangelCost } from "../components/dashboard/ArchangelCost";
+import { ProviderHealth } from "../components/dashboard/ProviderHealth";
 import { HermesVoice } from "../components/HermesVoice";
 import type { Agent, Issue } from "@paperclipai/shared";
 import type { ArchangelName } from "@/components/SacredGeometry";
@@ -228,36 +232,130 @@ function formatNumber(n: number): string {
   return String(n);
 }
 
-function UsageSparkline({ byDay }: { byDay: { date: string; tokens: number; calls: number }[] }) {
-  const maxTokens = Math.max(...byDay.map((d) => d.tokens), 1);
-  const width = byDay.length * 10;
-  const points = byDay
-    .map((d, i) => `${i * 10},${100 - (d.tokens / maxTokens) * 90}`)
+/** Full-width dual-axis area chart for The Ephemeris */
+function EphemerisChart({ byDay }: { byDay: { date: string; tokens: number; calls: number; costCents: number }[] }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const maxTokens = Math.max(...byDay.map((d) => d.tokens ?? 0), 1);
+  const maxCost = Math.max(...byDay.map((d) => d.costCents ?? 0), 1);
+  const w = 600;
+  const h = 140;
+  const padTop = 8;
+  const padBot = 4;
+  const usableH = h - padTop - padBot;
+
+  const tokenPoints = byDay
+    .map((d, i) => {
+      const x = (i / Math.max(byDay.length - 1, 1)) * w;
+      const y = padTop + usableH - (d.tokens / maxTokens) * usableH;
+      return `${x},${y}`;
+    })
     .join(" ");
-  const areaPoints = `0,100 ${points} ${(byDay.length - 1) * 10},100`;
+
+  const costPoints = byDay
+    .map((d, i) => {
+      const x = (i / Math.max(byDay.length - 1, 1)) * w;
+      const y = padTop + usableH - ((d.costCents ?? 0) / maxCost) * usableH;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  const tokenArea = `0,${h} ${tokenPoints} ${w},${h}`;
+
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pct = x / rect.width;
+    const idx = Math.round(pct * (byDay.length - 1));
+    setHoverIdx(Math.max(0, Math.min(idx, byDay.length - 1)));
+  };
+
+  const hovered = hoverIdx != null ? byDay[hoverIdx] : null;
 
   return (
-    <div className="h-32 w-full">
+    <div className="space-y-1">
+      {/* Tooltip row */}
+      <div className="flex items-center justify-between h-5">
+        {hovered ? (
+          <>
+            <span className="font-mono text-[11px] text-[#ededed]">{hovered.date}</span>
+            <div className="flex items-center gap-4">
+              <span className="font-mono text-[11px] tabular-nums text-[#4ea8ff]">
+                {formatNumber(hovered.tokens)} tokens
+              </span>
+              <span className="font-mono text-[11px] tabular-nums text-[#22c55e]">
+                {(hovered.costCents ?? 0) >= 100 ? `$${((hovered.costCents ?? 0) / 100).toFixed(2)}` : `${hovered.costCents ?? 0}\u00A2`}
+              </span>
+              <span className="font-mono text-[11px] tabular-nums text-[#6e6e6e]">
+                {hovered.calls} calls
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div />
+            <div className="flex items-center gap-4">
+              <span className="flex items-center gap-1.5 font-mono text-[10px] text-[#6e6e6e]">
+                <span className="h-1.5 w-4 rounded-full bg-[#4ea8ff]/60 inline-block" /> Tokens
+              </span>
+              <span className="flex items-center gap-1.5 font-mono text-[10px] text-[#6e6e6e]">
+                <span className="h-0.5 w-4 rounded-full bg-[#22c55e] inline-block" /> Cost
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+
       <svg
-        viewBox={`0 0 ${width} 100`}
-        className="w-full h-full"
+        ref={svgRef}
+        viewBox={`0 0 ${w} ${h}`}
+        className="w-full h-[140px]"
         preserveAspectRatio="none"
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoverIdx(null)}
       >
-        <polygon
-          fill="currentColor"
-          className="text-primary/10"
-          points={areaPoints}
-        />
+        <defs>
+          <linearGradient id="eph-token-fill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stopColor="#4ea8ff" stopOpacity="0.25" />
+            <stop offset="1" stopColor="#4ea8ff" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {/* Token area fill */}
+        <polygon fill="url(#eph-token-fill)" points={tokenArea} />
+        {/* Token line */}
         <polyline
           fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          className="text-primary"
-          points={points}
+          stroke="#4ea8ff"
+          strokeWidth="1.6"
+          points={tokenPoints}
+          filter="drop-shadow(0 0 3px rgba(78,168,255,.4))"
         />
+        {/* Cost line (dashed) */}
+        <polyline
+          fill="none"
+          stroke="#22c55e"
+          strokeWidth="1.2"
+          strokeDasharray="4,3"
+          points={costPoints}
+          opacity="0.8"
+        />
+        {/* Hover indicator */}
+        {hoverIdx != null && (
+          <line
+            x1={(hoverIdx / Math.max(byDay.length - 1, 1)) * w}
+            x2={(hoverIdx / Math.max(byDay.length - 1, 1)) * w}
+            y1={0}
+            y2={h}
+            stroke="rgba(255,255,255,0.15)"
+            strokeWidth="1"
+          />
+        )}
       </svg>
-      <div className="flex justify-between mt-1 text-[9px] text-muted-foreground">
+      <div className="flex justify-between text-[9px] text-muted-foreground font-mono">
         <span>{byDay[0]?.date?.slice(5)}</span>
+        <span>{byDay[Math.floor(byDay.length / 2)]?.date?.slice(5)}</span>
         <span>{byDay[byDay.length - 1]?.date?.slice(5)}</span>
       </div>
     </div>
@@ -322,6 +420,13 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  // Cost data for CostLedger and ArchangelCost panels
+  const { data: costByAgent } = useQuery({
+    queryKey: ["costs-by-agent", selectedCompanyId ?? "_"] as const,
+    queryFn: () => costsApi.byAgent(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   // Suno issues for the Hermetic panel row (Magnum Opus / Eighth Sphere).
   const { data: sunoIssues } = useQuery({
     queryKey: ["suno-pipeline", selectedCompanyId ?? "_"] as const,
@@ -331,6 +436,20 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+
+  // Compute 7-day trends for WorkspacePulse
+  const { sessionsTrend, tokensTrend } = useMemo(() => {
+    const byDay = usageStats?.byDay ?? [];
+    if (byDay.length < 8) return { sessionsTrend: undefined, tokensTrend: undefined };
+    const thisWeekTokens = byDay.slice(-7).reduce((s, d) => s + d.tokens, 0);
+    const lastWeekTokens = byDay.slice(-14, -7).reduce((s, d) => s + d.tokens, 0);
+    const thisWeekCalls = byDay.slice(-7).reduce((s, d) => s + d.calls, 0);
+    const lastWeekCalls = byDay.slice(-14, -7).reduce((s, d) => s + d.calls, 0);
+    return {
+      sessionsTrend: lastWeekCalls > 0 ? Math.round(((thisWeekCalls - lastWeekCalls) / lastWeekCalls) * 100) : undefined,
+      tokensTrend: lastWeekTokens > 0 ? Math.round(((thisWeekTokens - lastWeekTokens) / lastWeekTokens) * 100) : undefined,
+    };
+  }, [usageStats?.byDay]);
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -484,6 +603,8 @@ export function Dashboard() {
             activeModelCalls={usageStats?.byModel?.[0]?.calls ?? 0}
             activeModelSessions={0}
             byDay={usageStats?.byDay ?? []}
+            sessionsTrend={sessionsTrend}
+            tokensTrend={tokensTrend}
           />
 
           {/* ── 0.5. Agent Activity Bar ────────────────────────────── */}
@@ -493,12 +614,11 @@ export function Dashboard() {
             cacheHitRate={usageStats?.cacheHitRate ?? 0}
           />
 
-          {/* ── 3. Usage Trend + Top Models ──────────────────────────── */}
-          <div className="grid md:grid-cols-3 gap-[14px]">
-            {/* Usage Trend — 2/3 width */}
-            <div className="md:col-span-2 rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="seclabel b"><CaduceusMark /> The Ephemeris</h3>
+          {/* ── 3. The Ephemeris — Full-width Usage Trend ──────────────── */}
+          <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="seclabel b"><CaduceusMark /> The Ephemeris</h3>
+              <div className="flex items-center gap-3">
                 <div className="flex gap-1">
                   {["7D", "14D", "30D"].map(p => (
                     <button key={p} className={cn("px-2 py-0.5 text-[10px] rounded", p === "30D" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
@@ -507,26 +627,58 @@ export function Dashboard() {
                   ))}
                 </div>
               </div>
-              {usageStats && usageStats.byDay.length > 0 ? (
-                <UsageSparkline byDay={usageStats.byDay} />
-              ) : (
-                <div className="h-32 flex items-center justify-center text-sm text-muted-foreground">
-                  No usage data yet
-                </div>
-              )}
             </div>
+            {usageStats && usageStats.byDay.length > 0 ? (
+              <EphemerisChart byDay={usageStats.byDay} />
+            ) : (
+              <div className="h-40 flex items-center justify-center text-sm text-muted-foreground">
+                No usage data yet
+              </div>
+            )}
+          </div>
 
-            {/* Top Models — 1/3 width */}
+          {/* ── 3.5. Daemons + Cost Ledger + Provider Health ──────────── */}
+          <div className="grid md:grid-cols-3 gap-[14px]">
+            {/* The Daemons — Top Models with progress bars */}
             <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
               <h3 className="seclabel p mb-3"><CaduceusMark /> The Daemons</h3>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {usageStats && usageStats.byModel.length > 0 ? (
-                  usageStats.byModel.slice(0, 5).map((m) => (
-                    <div key={m.model} className="flex justify-between text-sm">
-                      <span className="truncate mr-2">{m.model}</span>
-                      <span className="text-muted-foreground tabular-nums shrink-0">{m.calls} calls</span>
-                    </div>
-                  ))
+                  usageStats.byModel.slice(0, 6).map((m, i) => {
+                    const totalCalls = usageStats.totalCalls || 1;
+                    const pct = Math.round((m.calls / totalCalls) * 100);
+                    const cost = m.costCents ?? 0;
+                    const costStr = cost >= 100
+                      ? `$${(cost / 100).toFixed(2)}`
+                      : cost > 0 ? `${cost}\u00A2` : "$0";
+                    return (
+                      <div key={m.model} className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm truncate mr-2 flex items-center gap-1.5">
+                            <span className="font-mono text-[10px] text-[#6e6e6e]">#{i + 1}</span>
+                            {m.model}
+                          </span>
+                          <span className="font-mono text-[10px] tabular-nums text-[#6e6e6e] shrink-0">
+                            {costStr}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all"
+                              style={{
+                                width: `${Math.max(pct, 2)}%`,
+                                background: i === 0 ? "#b964ff" : "rgba(255,255,255,0.25)",
+                              }}
+                            />
+                          </div>
+                          <span className="font-mono text-[10px] tabular-nums text-[#6e6e6e] w-16 text-right shrink-0">
+                            {pct}% · {formatNumber(m.calls)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
                 ) : (
                   <>
                     <div className="flex justify-between text-sm">
@@ -541,9 +693,20 @@ export function Dashboard() {
                 )}
               </div>
             </div>
+
+            {/* Cost Ledger */}
+            <CostLedger
+              monthSpendCents={data.costs.monthSpendCents}
+              monthBudgetCents={data.costs.monthBudgetCents}
+              byDay={usageStats?.byDay ?? []}
+              totalCostCents={usageStats?.totalCostCents ?? 0}
+            />
+
+            {/* Provider Health */}
+            <ProviderHealth providers={usageStats?.byProvider ?? []} />
           </div>
 
-          {/* ── Hermes: Sessions Intelligence + Skills ────────────────── */}
+          {/* ── Hermes: Sessions Intelligence + Memoria + Grimoire + Archangel Cost ── */}
           <div className="grid md:grid-cols-3 gap-[14px]">
             {/* Sessions Intelligence — 2/3 width */}
             <div className="md:col-span-2">
@@ -583,7 +746,7 @@ export function Dashboard() {
 
             {/* Right column — stacked cards */}
             <div className="space-y-[14px]">
-              {/* Cache Efficiency */}
+              {/* Cache Efficiency — Memoria */}
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="seclabel b"><CaduceusMark /> Memoria</h3>
@@ -595,7 +758,27 @@ export function Dashboard() {
                       {usageStats.cacheHitRate}%
                       <span className="font-mono text-[11px] text-[#6e6e6e] ml-2 tracking-[0.08em] uppercase font-medium">Hit Rate</span>
                     </div>
-                    <span className="font-mono text-[11px] text-[#6e6e6e] tracking-[0.06em] mt-1.5 block">prompt token cache hit rate</span>
+                    {/* Cache bar visualization */}
+                    <div className="mt-3 space-y-1.5">
+                      <div className="h-2 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden">
+                        <div
+                          className="h-full rounded-full"
+                          style={{
+                            width: `${usageStats.cacheHitRate}%`,
+                            background: "linear-gradient(90deg, #4ea8ff, #22c55e)",
+                            boxShadow: "0 0 8px rgba(78,168,255,0.3)",
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="font-mono text-[10px] text-[#6e6e6e]">
+                          {formatNumber(Math.round(usageStats.totalTokens * (usageStats.cacheHitRate / 100)))} cached
+                        </span>
+                        <span className="font-mono text-[10px] text-[#6e6e6e]">
+                          {formatNumber(usageStats.totalTokens)} total
+                        </span>
+                      </div>
+                    </div>
                   </>
                 ) : (
                   <>
@@ -605,7 +788,7 @@ export function Dashboard() {
                 )}
               </div>
 
-              {/* Agent Skills */}
+              {/* Agent Skills — Grimoire */}
               <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="seclabel b"><CaduceusMark /> The Grimoire</h3>
@@ -627,6 +810,9 @@ export function Dashboard() {
               </div>
             </div>
           </div>
+
+          {/* ── Archangel Cost Attribution ──────────────────────────── */}
+          <ArchangelCost byAgent={costByAgent ?? []} />
 
           {/* ── The Mechanism: Magnum Opus + Solve et Coagula + Eighth Sphere
                 + Hermes' Errands + Ouroboros — five small Hermetic telemetry cards ── */}

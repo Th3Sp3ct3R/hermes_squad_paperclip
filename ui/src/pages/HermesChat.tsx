@@ -384,7 +384,18 @@ export function HermesChat() {
       vadRef.current = vad;
       connectWs();
       setVoiceState("connecting");
-    } catch {
+    } catch (err) {
+      console.error("[HermesChat] startVoice failed:", err);
+      const msg = (err as Error)?.message ?? String(err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: "hermes",
+          text: `Voice init failed: ${msg}. Try using text input instead.`,
+          timestamp: new Date(),
+        },
+      ]);
       setVoiceState("idle");
     }
   }, [connectWs, stopPlayback, connectMicToAnalyser]);

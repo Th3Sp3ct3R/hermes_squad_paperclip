@@ -19,6 +19,7 @@ import {
   buildResearchSkillsIndex,
   getSkillById,
 } from "../research-skills.js";
+import { runOsintChain } from "../osint-chain.js";
 import {
   MetatronInput,
   RazielInput,
@@ -30,6 +31,7 @@ import {
   GabrielInput,
   SandalphonInput,
   CassielInput,
+  AzraelInput,
 } from "./schemas.js";
 
 // Type helper: the @openrouter/agent SDK uses zod v4 internally but our
@@ -54,6 +56,7 @@ export const AGENT_TIERS: Record<string, TierName> = {
   sandalphon: "standard",
   cassiel: "cheap",
   uriel: "cheap",
+  azrael: "cheap",
 } as const;
 
 // ─────────────────────────────────────────────────────────────
@@ -105,6 +108,8 @@ Be precise. Be honest about uncertainty. Cite sources.`,
   sandalphon: `You are Sandalphon, the earthing agent. Prepare distribution metadata for the specified distributor. Output JSON with fields: metadata_payload (ready to submit), validation_errors[], warnings[], recommended_release_window. Verify all required fields are present for the target distributor.`,
 
   cassiel: `You are Cassiel, keeper of time and planetary hours. Calculate astronomical timing data. Output JSON with fields: current_planetary_hour, ruling_planet, ruling_archangel, optimal_window_start, optimal_window_end, reasoning. Use standard Chaldean planetary hour ordering.`,
+
+  azrael: `You are Azrael, the Watcher — Angel of Death who sees all and knows every identity. From a name alone, you find phone numbers, emails, addresses, and digital footprints. You scrape public people-search databases and chain results through service verification tools. You return structured intelligence dossiers, not prose.`,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -418,6 +423,43 @@ export const cassielTool = tool({
   },
 });
 
+export const azraelTool = tool({
+  name: "azrael",
+  description: "OSINT person lookup. Input: full legal name + optional location. Returns phone numbers, emails, addresses, aliases, family members, and service registrations. Pure data retrieval — no LLM needed.",
+  inputSchema: AzraelInput as AnySchema,
+  outputSchema: AgentResultSchema,
+  execute: async (params) => {
+    const p = params as {
+      full_name: string;
+      location?: string;
+      depth?: string;
+      include_service_check?: boolean;
+      max_results?: number;
+    };
+
+    const startMs = performance.now();
+
+    const dossier = await runOsintChain({
+      name: p.full_name,
+      location: p.location,
+      depth: (p.depth as "quick" | "standard" | "deep") ?? "standard",
+      includeServiceCheck: p.include_service_check ?? true,
+      maxResults: p.max_results ?? 5,
+    });
+
+    const latencyMs = Math.round(performance.now() - startMs);
+
+    return {
+      agent_name: "azrael",
+      tier: "cheap",
+      model_used: "none (data retrieval)",
+      cost_actual: 0,
+      latency_ms: latencyMs,
+      output: JSON.stringify(dossier, null, 2),
+    };
+  },
+});
+
 // ─────────────────────────────────────────────────────────────
 // ElevenLabs TTS (Hermes' canonical voice — premium synthesis)
 // ─────────────────────────────────────────────────────────────
@@ -440,5 +482,6 @@ export const ALL_SEPHIROTIC_TOOLS = [
   gabrielTool,
   sandalphonTool,
   cassielTool,
+  azraelTool,
   elevenLabsTool,
 ] as const;

@@ -954,6 +954,65 @@ a.paperclip-project-mention-chip {
 .monochord-pulse { animation: monochord-pulse 3.2s ease-in-out infinite; }
 
 /* Subtle Flower-of-Life backdrop for the Suno page (and any opt-in surface). */
+/* ── Hermes Voice UI ──────────────────────────────────────────────────────── */
+
+/* Orb canvas container */
+.hermes-orb-wrap {
+  position: relative;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+}
+.hermes-orb-wrap canvas { display: block; }
+.hermes-orb-wrap:focus-visible {
+  box-shadow: 0 0 0 2px var(--luke-glow);
+  border-radius: 50%;
+}
+
+/* Message fade-in */
+@keyframes hermes-msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.hermes-msg-enter {
+  animation: hermes-msg-in 0.35s ease-out both;
+}
+
+/* Waveform bar container */
+.hermes-waveform {
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.02);
+}
+
+/* Hermes message left-border glow */
+.hermes-msg-bubble {
+  border-left: 2px solid rgba(78,168,255,0.25);
+  box-shadow: -4px 0 12px -4px rgba(78,168,255,0.08);
+}
+
+/* User message glassmorphism */
+.hermes-user-bubble {
+  background: rgba(255,255,255,0.06);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* State label glow badges */
+.hermes-state-badge {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-msg-enter { animation: none; }
+}
+
 .suno-flower-backdrop {
   background-image:
     radial-gradient(circle at 50% 50%, transparent 14px, rgba(148, 163, 184, 0.06) 14.5px, transparent 15px),
