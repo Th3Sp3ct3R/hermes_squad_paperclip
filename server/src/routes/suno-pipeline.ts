@@ -3626,7 +3626,54 @@ export function sunoPipelineRoutes(db: Db) {
 
     }
 
-    advanceJob(job.id, "music", "releaseCopy");
+    advanceJob(job.id, "music", "coverArt");
+
+    // Step 6.5: Cover art (Jophiel renders the visualPrompt into an image)
+    try {
+      const artMeta = (issue.metadata ?? {}) as Record<string, unknown>;
+      const artStages = (artMeta.stages && typeof artMeta.stages === "object"
+        ? (artMeta.stages as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+      const visualPrompt = typeof artStages.visualPrompt === "string"
+        ? (artStages.visualPrompt as string) : null;
+
+      if (visualPrompt && !issue.thumbnailUrl) {
+        const coverArt = await generateCoverArt({
+          prompt: visualPrompt,
+          aspectRatio: "1:1",
+        });
+
+        const [artUpdated] = await db
+          .update(sunoIssues)
+          .set({
+            thumbnailUrl: coverArt.dataUrl,
+            metadata: appendHistory(
+              { ...artMeta, stages: { ...artStages, thumbnailUrl: coverArt.dataUrl }, lastCoverArtModel: coverArt.model },
+              {
+                stage: "thumbnailUrl",
+                output: `[image ${coverArt.mimeType} ${coverArt.elapsedMs}ms]`,
+                at: new Date().toISOString(),
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                agentName: "Jophiel/CoverArt",
+                status: issue.status as SunoStatus,
+              },
+            ),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+          .returning();
+        if (artUpdated) issue = artUpdated;
+
+        logger.info({ issueId: id, model: coverArt.model, elapsedMs: coverArt.elapsedMs }, "[auto-run] cover art generated");
+      }
+    } catch (err) {
+      // Cover art failure is non-fatal — song continues without thumbnail
+      logger.warn({ issueId: id, err }, "[auto-run] cover art generation failed (non-fatal)");
+    }
+
+    advanceJob(job.id, "coverArt", "releaseCopy");
 
     // Step 7: Release copy (Gabriel)
     issue = await executeGenerateInternal({
