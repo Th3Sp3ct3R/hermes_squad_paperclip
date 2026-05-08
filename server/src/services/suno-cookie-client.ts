@@ -21,6 +21,11 @@
 
 import { logger } from "../middleware/logger.js";
 
+// NOTE: As of May 2026, studio-api.suno.ai is suspended (503).
+// All known Suno API domains (api.suno.ai, apicloud.suno.ai, studio.suno.ai)
+// are either 503 or unreachable. Cookie-based HTTP access is blocked.
+// CDP browser automation (suno-browser-agent.ts) is the only working method.
+// This client will work IF Suno re-enables their API at any domain.
 const SUNO_API_BASE = process.env.SUNO_API_BASE ?? "https://studio-api.suno.ai";
 
 // ─────────────────────────────────────────────────────────────
