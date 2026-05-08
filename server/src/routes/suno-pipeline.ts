@@ -1854,7 +1854,6 @@ export function sunoPipelineRoutes(db: Db) {
           const coverArt = await generateCoverArt({
             prompt: visualPrompt,
             aspectRatio: "1:1",
-            imageSize: "1K",
           });
 
           // Step 3: persist
@@ -2915,7 +2914,6 @@ export function sunoPipelineRoutes(db: Db) {
           prompt,
           model,
           aspectRatio: body.aspectRatio ?? "1:1",
-          imageSize: body.imageSize ?? "1K",
         });
       } catch (err) {
         throw badRequest(

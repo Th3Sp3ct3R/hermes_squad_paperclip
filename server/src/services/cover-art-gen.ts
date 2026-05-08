@@ -1,101 +1,188 @@
 /**
  * Cover Art Gen — Jophiel's image-rendering service.
  *
- * Calls OpenRouter's `/v1/chat/completions` endpoint with `modalities:
- * ["image", "text"]` to render an image from a text prompt. Returns the
- * data URL (base64-encoded) which can be stored directly in
- * `sunoIssues.thumbnailUrl` (text column accepts any URL).
+ * Primary: MiniMax image-01 (uses MINIMAX_API_KEY, already configured).
+ * Fallback: OpenRouter gemini-2.5-flash-image (if OPENROUTER credits available).
  *
- * Env:
- *   OPENROUTER_API_KEY        — required (image gen is paid; no :free variant)
- *   OPENROUTER_BASE_URL       — defaults to https://openrouter.ai/api/v1
- *   OPENROUTER_IMAGE_MODEL    — default model (overridable per call)
+ * Returns a data URL (base64) or external URL stored in `sunoIssues.thumbnailUrl`.
  *
- * Default model: `google/gemini-2.5-flash-image`. Per-archangel override via
- * `agents.runtimeConfig.imageModel` on the Jophiel agent.
- *
- * Per the OpenRouter Image Generation docs, supported aspect ratios for
- * Gemini include 1:1 (1024×1024 default), 16:9, 4:3, etc. For Suno cover
- * art we use 1:1 to match Suno's own thumbnail format.
+ * MiniMax API: POST https://api.minimax.io/v1/image_generation
+ *   model: "image-01"
+ *   prompt: text (max 1500 chars)
+ *   aspect_ratio: "1:1" (square cover art)
+ *   response_format: "base64" or "url"
  */
 import { logger } from "../middleware/logger.js";
 
-const OPENROUTER_BASE =
-  process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
-
-const DEFAULT_IMAGE_MODEL =
-  process.env.OPENROUTER_IMAGE_MODEL ?? "google/gemini-2.5-flash-image";
+const MINIMAX_BASE = process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io";
 
 export interface CoverArtGenInput {
   prompt: string;
-  /** Defaults to google/gemini-2.5-flash-image. */
+  /** Override model. Default: MiniMax image-01. */
   model?: string;
-  /** 1:1 default — square cover. Other options: 16:9, 4:3, 9:16, etc. */
-  aspectRatio?: "1:1" | "16:9" | "4:3" | "9:16" | "3:4" | "4:5" | "5:4" | string;
-  /** "1K" default. Options: "0.5K", "1K", "2K", "4K". */
-  imageSize?: "0.5K" | "1K" | "2K" | "4K" | string;
+  /** 1:1 default — square cover. */
+  aspectRatio?: "1:1" | "16:9" | "4:3" | "9:16" | "3:4" | "2:3" | "3:2" | string;
+  /** Response format. "base64" returns data URL, "url" returns temporary URL (24h). */
+  responseFormat?: "base64" | "url";
+  /** Number of images to generate (1-9). Default 1. */
+  n?: number;
+  /** Auto-optimize prompt via MiniMax. Default false. */
+  promptOptimizer?: boolean;
 }
 
 export interface CoverArtGenResult {
-  /** A `data:image/<type>;base64,<...>` URL safe to store in <img src=> */
+  /** A `data:image/png;base64,<...>` URL or an external URL depending on format. */
   dataUrl: string;
   /** image/png or image/jpeg etc. */
   mimeType: string;
   /** The model that actually generated the image. */
   model: string;
-  /** The accompanying text from the model (model often narrates briefly). */
+  /** Not used for MiniMax (kept for interface compatibility). */
   textCaption: string | null;
   /** Wall-clock duration in ms. */
   elapsedMs: number;
 }
 
 /**
- * Render a cover-art image from a text prompt via OpenRouter.
- *
- * @throws if OPENROUTER_API_KEY missing, network fails, or no image returned.
+ * Render cover-art from a text prompt via MiniMax image-01.
+ * Falls back to OpenRouter if MiniMax key is missing (unlikely).
  */
 export async function generateCoverArt(
   input: CoverArtGenInput,
 ): Promise<CoverArtGenResult> {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) {
-    throw new Error(
-      "OPENROUTER_API_KEY is not configured — set it in the server env to use cover-art generation",
-    );
+  const minimaxKey = process.env.MINIMAX_API_KEY;
+
+  if (minimaxKey) {
+    return generateViaMinimax(input, minimaxKey);
   }
 
-  const model = input.model ?? DEFAULT_IMAGE_MODEL;
+  // Fallback to OpenRouter if no MiniMax key
+  const orKey = process.env.OPENROUTER_API_KEY;
+  if (orKey) {
+    return generateViaOpenRouter(input, orKey);
+  }
+
+  throw new Error(
+    "No image generation API key configured. Set MINIMAX_API_KEY (preferred) or OPENROUTER_API_KEY.",
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// MiniMax image-01 (primary)
+// ─────────────────────────────────────────────────────────────
+
+async function generateViaMinimax(
+  input: CoverArtGenInput,
+  apiKey: string,
+): Promise<CoverArtGenResult> {
+  const model = "image-01";
   const aspectRatio = input.aspectRatio ?? "1:1";
-  const imageSize = input.imageSize ?? "1K";
+  const responseFormat = input.responseFormat ?? "base64";
   const startedAt = Date.now();
+
+  // MiniMax prompt limit is 1500 chars
+  const prompt = input.prompt.slice(0, 1500);
 
   const body: Record<string, unknown> = {
     model,
-    messages: [{ role: "user", content: input.prompt }],
-    modalities: ["image", "text"],
-    image_config: {
-      aspect_ratio: aspectRatio,
-      image_size: imageSize,
-    },
+    prompt,
+    aspect_ratio: aspectRatio,
+    response_format: responseFormat,
+    n: input.n ?? 1,
   };
 
-  let res: Response;
-  try {
-    res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.OPENROUTER_REFERER ?? "https://paperclip.ing",
-        "X-Title": process.env.OPENROUTER_APP_TITLE ?? "Paperclip Suno Pipeline",
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
+  if (input.promptOptimizer) {
+    body.prompt_optimizer = true;
+  }
+
+  const res = await fetch(`${MINIMAX_BASE}/v1/image_generation`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => `${res.status}`);
     throw new Error(
-      `OpenRouter image-gen network error: ${err instanceof Error ? err.message : String(err)}`,
+      `MiniMax image-gen error (${res.status}): ${errorText.slice(0, 600)}`,
     );
   }
+
+  const data = (await res.json()) as {
+    id?: string;
+    data?: {
+      image_urls?: string[];
+      image_base64?: string[];
+    };
+    metadata?: { success_count?: number; failed_count?: number };
+    base_resp?: { status_code: number; status_msg: string };
+  };
+
+  if (data.base_resp?.status_code && data.base_resp.status_code !== 0) {
+    throw new Error(
+      `MiniMax image-gen error ${data.base_resp.status_code}: ${data.base_resp.status_msg}`,
+    );
+  }
+
+  let imageData: string;
+  let mimeType = "image/png";
+
+  if (responseFormat === "base64" && data.data?.image_base64?.[0]) {
+    const b64 = data.data.image_base64[0];
+    imageData = `data:image/png;base64,${b64}`;
+  } else if (data.data?.image_urls?.[0]) {
+    imageData = data.data.image_urls[0];
+  } else {
+    throw new Error("MiniMax image-gen returned no image data");
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  logger.info(
+    `[cover-art-gen] MiniMax generated model=${model} aspect=${aspectRatio} elapsedMs=${elapsedMs}`,
+  );
+
+  return {
+    dataUrl: imageData,
+    mimeType,
+    model: `minimax/${model}`,
+    textCaption: null,
+    elapsedMs,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// OpenRouter fallback (gemini-2.5-flash-image)
+// ─────────────────────────────────────────────────────────────
+
+async function generateViaOpenRouter(
+  input: CoverArtGenInput,
+  apiKey: string,
+): Promise<CoverArtGenResult> {
+  const OPENROUTER_BASE =
+    process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
+  const model =
+    input.model ?? process.env.OPENROUTER_IMAGE_MODEL ?? "google/gemini-2.5-flash-image";
+  const aspectRatio = input.aspectRatio ?? "1:1";
+  const startedAt = Date.now();
+
+  const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": process.env.OPENROUTER_REFERER ?? "https://paperclip.ing",
+      "X-Title": process.env.OPENROUTER_APP_TITLE ?? "Paperclip Pipeline",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: input.prompt }],
+      modalities: ["image", "text"],
+      image_config: { aspect_ratio: aspectRatio, image_size: "1K" },
+    }),
+  });
 
   if (!res.ok) {
     const errorText = await res.text().catch(() => `${res.status}`);
@@ -108,33 +195,23 @@ export async function generateCoverArt(
     choices?: Array<{
       message?: {
         content?: string;
-        // Per OpenRouter docs: response shape uses snake_case in JSON
-        // (TS SDK converts to camelCase). image_url.url is a data URL.
-        images?: Array<{
-          type?: string;
-          image_url?: { url?: string };
-        }>;
+        images?: Array<{ image_url?: { url?: string } }>;
       };
     }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
 
   const message = data?.choices?.[0]?.message;
-  const firstImage = message?.images?.[0];
-  const dataUrl = firstImage?.image_url?.url;
+  const dataUrl = message?.images?.[0]?.image_url?.url;
   if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) {
-    throw new Error(
-      "OpenRouter image-gen returned no image (model may not support image output)",
-    );
+    throw new Error("OpenRouter image-gen returned no image");
   }
 
-  // Extract mime type from the data URL prefix: "data:image/png;base64,..."
   const mimeMatch = dataUrl.match(/^data:([^;]+);base64,/);
   const mimeType = mimeMatch?.[1] ?? "image/png";
-
   const elapsedMs = Date.now() - startedAt;
+
   logger.info(
-    `[cover-art-gen] generated model=${model} aspect=${aspectRatio} size=${imageSize} mimeType=${mimeType} elapsedMs=${elapsedMs} dataUrlBytes=${dataUrl.length}`,
+    `[cover-art-gen] OpenRouter generated model=${model} aspect=${aspectRatio} elapsedMs=${elapsedMs}`,
   );
 
   return {
