@@ -315,6 +315,7 @@ export function SunoPipeline() {
     queryKey: sunoQueryKey(selectedCompanyId ?? "_"),
     queryFn: () => sunoPipelineApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    refetchInterval: 5000, // Poll every 5s to show processing progress
   });
 
   const { data: agents } = useQuery({
@@ -977,6 +978,42 @@ function SunoCard({ issue, agentNameById, onChangeStatus, onDelete }: SunoCardPr
       <div className="text-[13px] leading-snug font-medium line-clamp-2">
         {issue.concept}
       </div>
+      {/* Processing stage indicator for GENERATING cards */}
+      {issue.status === "GENERATING" && (() => {
+        const meta = (issue.metadata as Record<string, unknown>) ?? {};
+        const stages = (meta.stages && typeof meta.stages === "object" ? meta.stages : {}) as Record<string, unknown>;
+        const pipeline = [
+          { key: "lyrics", label: "Lyrics", agent: "Zadkiel" },
+          { key: "soundPrompt", label: "Sound", agent: "Uriel" },
+          { key: "visualPrompt", label: "Visual", agent: "Jophiel" },
+          { key: "minimaxAudioUrl", label: "Audio", agent: "MiniMax" },
+          { key: "releaseCopy", label: "Copy", agent: "Gabriel" },
+        ];
+        const doneCount = pipeline.filter(s => !!stages[s.key]).length;
+        const currentStage = pipeline.find(s => !stages[s.key]);
+        return (
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <div className="flex gap-0.5">
+              {pipeline.map((s, i) => (
+                <div
+                  key={s.key}
+                  className={cn(
+                    "h-1 rounded-full transition-all",
+                    i < doneCount ? "w-3 bg-emerald-500/70" :
+                    i === doneCount ? "w-3 bg-amber-400/70 animate-pulse" :
+                    "w-3 bg-white/10"
+                  )}
+                />
+              ))}
+            </div>
+            {currentStage && (
+              <span className="text-[9px] text-amber-400/70 animate-pulse">
+                {currentStage.agent}
+              </span>
+            )}
+          </div>
+        );
+      })()}
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide rounded-sm border px-1.5 py-0.5 bg-muted/40">
           <ChakraYantra
