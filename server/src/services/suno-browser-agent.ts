@@ -510,28 +510,52 @@ export class SunoBrowserAgent {
  * Handles errors gracefully and logs them via the Paperclip logger.
  */
 export async function generateViaSuno(prompt: string): Promise<SunoResult> {
+  // Strategy: try CDP browser automation first, fall back to cookie client
   logger.info(
     { promptLength: prompt.length },
-    "[Raziel] generateViaSuno — starting browser automation",
+    "[Raziel] generateViaSuno — attempting CDP then cookie fallback",
   );
 
-  const agent = new SunoBrowserAgent();
+  let cdpError = "";
+
+  // Attempt 1: CDP browser automation
   try {
+    const agent = new SunoBrowserAgent();
     const result = await agent.runFullPipeline({ soundPrompt: prompt });
     logger.info(
-      {
-        songId: result.songId,
-        audioUrl: result.audioUrl,
-        duration: result.duration,
-      },
-      "[Raziel] generateViaSuno — completed successfully",
+      { songId: result.songId, audioUrl: result.audioUrl, method: "cdp" },
+      "[Raziel] generateViaSuno — CDP succeeded",
     );
     return result;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ error: msg }, "[Raziel] generateViaSuno — pipeline failed");
-    throw err;
+    cdpError = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { error: cdpError },
+      "[Raziel] CDP browser automation failed — trying cookie fallback",
+    );
   }
+
+  // Attempt 2: Cookie-based HTTP client (no Chrome needed)
+  const { generateViaSunoCookie, hasSunoCookie } = await import("./suno-cookie-client.js");
+
+  if (!hasSunoCookie()) {
+    throw new Error(
+      `[Raziel] CDP failed (${cdpError}) and SUNO_COOKIE is not set. Either launch Chrome with --remote-debugging-port=9222 or set SUNO_COOKIE in .env`,
+    );
+  }
+
+  logger.info("[Raziel] Falling back to cookie-based Suno client");
+  const cookieResult = await generateViaSunoCookie(prompt, {
+    makeInstrumental: true,
+  });
+
+  return {
+    songId: cookieResult.songId,
+    audioUrl: cookieResult.audioUrl,
+    title: cookieResult.title,
+    duration: cookieResult.duration,
+    variants: cookieResult.variants,
+  };
 }
 
 export default SunoBrowserAgent;
