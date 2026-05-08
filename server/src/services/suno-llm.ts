@@ -123,6 +123,10 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
     _lastFreeCallMs = Date.now();
   }
 
+  // Try MiniMax direct first (1-2s vs 40s through OpenRouter free tier)
+  const directResult = await callMinimaxDirect(opts);
+  if (directResult) return directResult;
+
   const requested = opts.model ?? FALLBACK_MODEL;
   const chain = [requested, ...LLM_FALLBACK_CHAIN.filter((m) => m !== requested)];
 
@@ -148,7 +152,55 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
   );
 }
 
-/** One actual HTTP call. Throws on non-2xx or empty completion. */
+/**
+ * Try MiniMax direct first (1-2s), fall back to OpenRouter.
+ * MiniMax direct is 20-40x faster than free-tier OpenRouter.
+ */
+async function callMinimaxDirect(
+  opts: OpenRouterCallOpts,
+): Promise<string | null> {
+  const key = process.env.MINIMAX_API_KEY;
+  if (!key) return null; // No MiniMax key — skip to OpenRouter
+
+  const MINIMAX_CHAT_BASE = process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io";
+  const startedAt = Date.now();
+
+  try {
+    const res = await fetch(`${MINIMAX_CHAT_BASE}/v1/text/chatcompletion_v2`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "MiniMax-Text-01",
+        messages: opts.messages,
+        temperature: opts.temperature ?? 0.8,
+        max_tokens: opts.maxTokens ?? 1500,
+      }),
+    });
+
+    if (!res.ok) return null; // Fall through to OpenRouter
+
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      base_resp?: { status_code: number; status_msg: string };
+    };
+
+    if (data.base_resp?.status_code && data.base_resp.status_code !== 0) return null;
+
+    const text = data.choices?.[0]?.message?.content?.trim();
+    if (!text) return null;
+
+    const elapsed = Date.now() - startedAt;
+    logger.info({ model: "MiniMax-Text-01", elapsed }, "[suno-llm] MiniMax direct success");
+    return text;
+  } catch {
+    return null; // Any error → fall through to OpenRouter
+  }
+}
+
+/** One actual HTTP call via OpenRouter. Throws on non-2xx or empty completion. */
 async function callOpenRouterOnce(
   opts: OpenRouterCallOpts & { model: string },
   key: string | undefined,
