@@ -99,9 +99,9 @@ export interface SunoLlmContext {
  * model starts with "kimi-" and KIMI_API_KEY is set; otherwise falls through
  * to OpenRouter. Returns the assistant's trimmed text content.
  */
-// Rate-limit guard for free-tier models (20 req/min)
-let _lastCallMs = 0;
-const FREE_TIER_DELAY_MS = 3500; // ~17 req/min, safely under 20
+// Rate-limit guard — only for :free models (20 req/min on OpenRouter free tier)
+let _lastFreeCallMs = 0;
+const FREE_TIER_DELAY_MS = 1500; // ~40 req/min target — fast enough, safe margin
 
 export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> {
   const orKey = process.env.OPENROUTER_API_KEY;
@@ -112,13 +112,16 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
     );
   }
 
-  // Throttle calls on free-tier models to avoid rate limits
-  const now = Date.now();
-  const elapsed = now - _lastCallMs;
-  if (elapsed < FREE_TIER_DELAY_MS) {
-    await new Promise((r) => setTimeout(r, FREE_TIER_DELAY_MS - elapsed));
+  // Only throttle free-tier models
+  const isFree = (opts.model ?? FALLBACK_MODEL).includes(":free");
+  if (isFree) {
+    const now = Date.now();
+    const elapsed = now - _lastFreeCallMs;
+    if (elapsed < FREE_TIER_DELAY_MS) {
+      await new Promise((r) => setTimeout(r, FREE_TIER_DELAY_MS - elapsed));
+    }
+    _lastFreeCallMs = Date.now();
   }
-  _lastCallMs = Date.now();
 
   const requested = opts.model ?? FALLBACK_MODEL;
   const chain = [requested, ...LLM_FALLBACK_CHAIN.filter((m) => m !== requested)];
