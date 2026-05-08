@@ -60,6 +60,7 @@ import {
   type MinimaxMusicModel,
 } from "../services/minimax-music.js";
 import { generateViaSuno } from "../services/suno-browser-agent.js";
+import { createJob, advanceJob, completeJob, failJob, getJobs } from "../services/pipeline-jobs.js";
 import {
   parseBatchRequest,
   runWithConcurrency,
@@ -3221,6 +3222,13 @@ export function sunoPipelineRoutes(db: Db) {
   //
   // Returns when the issue reaches REVIEW. Total time: ~30–60s depending
   // on free-tier OpenRouter latency + MiniMax generation time.
+  // ── GET /processing — live job progress for the pipeline UI ────────────
+  router.get("/suno-pipeline/processing", async (req, res) => {
+    const companyId = resolveCompanyId(req);
+    assertCompanyAccess(req, companyId);
+    res.json(getJobs(companyId));
+  });
+
   router.post("/suno-pipeline/:id/auto-run", validate(autoRunSchema), async (req, res) => {
     const id = paramId(req);
     const body = req.body as z.infer<typeof autoRunSchema>;
@@ -3228,6 +3236,14 @@ export function sunoPipelineRoutes(db: Db) {
 
     let issue = await loadIssueOrThrow(id, body.companyId);
     const actor = getActorInfo(req);
+
+    // Fire-and-forget: create a job, respond immediately, process in background
+    const job = createJob(issue.id, body.companyId, issue.concept ?? "", body.musicBackend ?? "minimax");
+    res.status(202).json({ jobId: job.id, issueId: issue.id, status: "accepted" });
+
+    // Background processing — catches its own errors
+    (async () => {
+    try {
 
     // Step 1: Auto-assign archangels by name (only if not already assigned)
     if (!issue.lyricsAgentId || !issue.soundAgentId || !issue.visualAgentId) {
@@ -3296,6 +3312,8 @@ export function sunoPipelineRoutes(db: Db) {
       );
     }
 
+    advanceJob(job.id, "dispatch", "soundPrompt");
+
     // Step 3-5: Creative chain — MELODY FIRST (Uriel → Zadkiel → Jophiel)
     //
     // CRITICAL: Wrap the entire creative chain in a try/catch. Without this,
@@ -3316,6 +3334,7 @@ export function sunoPipelineRoutes(db: Db) {
         hints: body.hints,
         actor,
       });
+      advanceJob(job.id, "soundPrompt", "lyrics");
       issue = await executeGenerateInternal({
         issue,
         companyId: body.companyId,
@@ -3327,6 +3346,7 @@ export function sunoPipelineRoutes(db: Db) {
         hints: body.hints,
         actor,
       });
+      advanceJob(job.id, "lyrics", "visualPrompt");
       issue = await executeGenerateInternal({
         issue,
         companyId: body.companyId,
@@ -3405,6 +3425,8 @@ export function sunoPipelineRoutes(db: Db) {
       });
       return;
     }
+
+    advanceJob(job.id, "visualPrompt", "music");
 
     // Step 6: Music generation — option A parallel A/B.
     //
@@ -3604,6 +3626,8 @@ export function sunoPipelineRoutes(db: Db) {
 
     }
 
+    advanceJob(job.id, "music", "releaseCopy");
+
     // Step 7: Release copy (Gabriel)
     issue = await executeGenerateInternal({
       issue,
@@ -3617,6 +3641,8 @@ export function sunoPipelineRoutes(db: Db) {
       hints: body.hints,
       actor,
     });
+
+    advanceJob(job.id, "releaseCopy", "review");
 
     // Step 8: Request review (only if all required stages present + audio)
     const finalMeta = (issue.metadata ?? {}) as Record<string, unknown>;
@@ -3653,18 +3679,13 @@ export function sunoPipelineRoutes(db: Db) {
       }
     }
 
-    res.json({
-      issue,
-      readyForReview: canReview,
-      missingStages: canReview
-        ? []
-        : [
-            !finalStages.lyrics ? "lyrics" : null,
-            !finalStages.soundPrompt ? "soundPrompt" : null,
-            !finalStages.visualPrompt ? "visualPrompt" : null,
-            !hasAudio ? "audio (suno or minimax)" : null,
-          ].filter(Boolean),
-    });
+    completeJob(job.id);
+    logger.info({ jobId: job.id, issueId: issue.id }, "[auto-run] job complete");
+    } catch (err) {
+      failJob(job.id, err instanceof Error ? err.message : String(err));
+      logger.error({ jobId: job.id, issueId: issue.id, err }, "[auto-run] job failed");
+    }
+    })(); // end background IIFE
   });
 
   // ── POST /triage ──────────────────────────────────────────────────────────

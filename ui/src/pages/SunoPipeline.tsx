@@ -318,6 +318,13 @@ export function SunoPipeline() {
     refetchInterval: 5000, // Poll every 5s to show processing progress
   });
 
+  const { data: processingJobs } = useQuery({
+    queryKey: ["suno-pipeline-processing", selectedCompanyId ?? "_"] as const,
+    queryFn: () => sunoPipelineApi.processing(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 2000, // Poll every 2s for live progress
+  });
+
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? "_"),
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -661,6 +668,63 @@ export function SunoPipeline() {
             </p>
           )}
         </Card>
+      )}
+
+      {/* Processing Jobs — live progress strip */}
+      {processingJobs && processingJobs.length > 0 && (
+        <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs font-medium uppercase tracking-wider text-amber-400/80">
+              {processingJobs.filter(j => !j.finishedAt).length} Processing
+            </span>
+          </div>
+          {processingJobs.filter(j => !j.finishedAt).map(job => {
+            const stages = ["assign","dispatch","soundPrompt","lyrics","visualPrompt","music","coverArt","releaseCopy","review"];
+            const currentIdx = stages.indexOf(job.currentStage);
+            const stageLabels: Record<string, string> = {
+              assign: "Assigning", dispatch: "Dispatching", soundPrompt: "Uriel (Sound)",
+              lyrics: "Zadkiel (Lyrics)", visualPrompt: "Jophiel (Visual)", music: "MiniMax (Audio)",
+              coverArt: "Jophiel (Cover)", releaseCopy: "Gabriel (Copy)", review: "Review",
+            };
+            return (
+              <div key={job.id} className="flex items-center gap-3">
+                <div className="flex gap-0.5 shrink-0">
+                  {stages.map((s, i) => (
+                    <div
+                      key={s}
+                      className={cn(
+                        "h-1.5 w-2.5 rounded-full transition-all",
+                        i < currentIdx ? "bg-emerald-500/70" :
+                        i === currentIdx ? "bg-amber-400 animate-pulse" :
+                        "bg-white/10"
+                      )}
+                    />
+                  ))}
+                </div>
+                <span className="text-[11px] text-amber-300/80 font-medium truncate">
+                  {stageLabels[job.currentStage] ?? job.currentStage}
+                </span>
+                <span className="text-[10px] text-muted-foreground/50 truncate flex-1">
+                  {job.concept.slice(0, 40)}
+                </span>
+                <span className="text-[10px] text-muted-foreground/40 tabular-nums shrink-0">
+                  {Math.round((Date.now() - job.startedAt) / 1000)}s
+                </span>
+              </div>
+            );
+          })}
+          {processingJobs.filter(j => j.currentStage === "done").map(job => (
+            <div key={job.id} className="flex items-center gap-2 text-[10px] text-emerald-400/60">
+              <span>Done: {job.concept.slice(0, 40)}</span>
+            </div>
+          ))}
+          {processingJobs.filter(j => j.currentStage === "failed").map(job => (
+            <div key={job.id} className="flex items-center gap-2 text-[10px] text-red-400/60">
+              <span>Failed: {job.concept.slice(0, 30)} — {job.error?.slice(0, 50)}</span>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Archangel Agent Bar — shows the pipeline agents in order */}

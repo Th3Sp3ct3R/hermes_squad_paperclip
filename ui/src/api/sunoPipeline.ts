@@ -190,10 +190,27 @@ export interface SunoTimelineEvent {
 const transitionEndpoint = (id: string, verb: string, companyId: string) =>
   withQuery(`/suno-pipeline/${encodeURIComponent(id)}/${verb}`, { companyId });
 
+export interface PipelineJob {
+  id: string;
+  issueId: string;
+  companyId: string;
+  concept: string;
+  musicBackend: string;
+  currentStage: string;
+  completedStages: string[];
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
 export const sunoPipelineApi = {
   // ── CRUD ────────────────────────────────────────────────────────────────
   list: (companyId: string) =>
     api.get<SunoIssue[]>(withQuery("/suno-pipeline", { companyId })),
+
+  /** Get active processing jobs */
+  processing: (companyId: string) =>
+    api.get<PipelineJob[]>(withQuery("/suno-pipeline/processing", { companyId })),
   create: (companyId: string, input: CreateSunoIssueInput) =>
     api.post<SunoIssue>("/suno-pipeline", { companyId, ...input }),
   update: (id: string, companyId: string, input: UpdateSunoIssueInput) =>
