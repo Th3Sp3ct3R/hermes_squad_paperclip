@@ -3550,77 +3550,26 @@ export function sunoPipelineRoutes(db: Db) {
         }
       }
 
-      // ── Suno A-side via Raziel browser automation ──
+      // ── Suno via Raziel CDP browser automation ──
       if (body.musicBackend === "suno") {
         try {
-          const sunoResult = await generateViaSuno(rawSoundPrompt);
+          const sunoResult = await generateViaSuno(rawSoundPrompt.slice(0, 1000));
           const meta3 = (issue.metadata ?? {}) as Record<string, unknown>;
           const stages3 = (meta3.stages && typeof meta3.stages === "object"
             ? (meta3.stages as Record<string, unknown>)
             : {}) as Record<string, unknown>;
           const nextMeta = appendHistory(
-            {
-              ...meta3,
-              stages: {
-                ...stages3,
-                audioUrl: sunoResult.audioUrl,
-                sunoSongId: sunoResult.songId,
-                sunoVariants: sunoResult.variants,
-              },
-              lastMusicBackend: "suno",
-            },
-            {
-              stage: "audioUrl",
-              output: sunoResult.audioUrl,
-              at: new Date().toISOString(),
-              actorType: actor.actorType,
-              actorId: actor.actorId,
-              agentId: actor.agentId,
-              agentName: "Raziel/Suno (auto-run)",
-              status: issue.status as SunoStatus,
-            },
+            { ...meta3, stages: { ...stages3, audioUrl: sunoResult.audioUrl, sunoSongId: sunoResult.songId }, lastMusicBackend: "suno" },
+            { stage: "audioUrl", output: sunoResult.audioUrl, at: new Date().toISOString(), actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, agentName: "Raziel/Suno", status: issue.status as SunoStatus },
           );
           const [sunoUpdated] = await db
             .update(sunoIssues)
-            .set({
-              audioUrl: sunoResult.audioUrl,
-              sunoSongId: sunoResult.songId,
-              metadata: nextMeta,
-              updatedAt: new Date(),
-            })
+            .set({ audioUrl: sunoResult.audioUrl, sunoSongId: sunoResult.songId, metadata: nextMeta, updatedAt: new Date() })
             .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
             .returning();
           if (sunoUpdated) issue = sunoUpdated;
-
-          await logActivity(db, {
-            companyId: body.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "suno_issue.auto_run.suno_generated",
-            entityType: "suno_issue",
-            entityId: issue.id,
-            details: {
-              backend: "suno",
-              songId: sunoResult.songId,
-              audioUrl: sunoResult.audioUrl,
-            },
-          });
         } catch (err) {
-          // Suno failed — log but don't crash the pipeline
-          await logActivity(db, {
-            companyId: body.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "suno_issue.auto_run.suno_failed",
-            entityType: "suno_issue",
-            entityId: issue.id,
-            details: { backend: "suno", error: err instanceof Error ? err.message : String(err) },
-          });
-          // Don't throw — the song continues without Suno audio
+          logger.warn({ issueId: id, err: err instanceof Error ? err.message : String(err) }, "[auto-run] Suno failed (non-fatal)");
         }
       }
 

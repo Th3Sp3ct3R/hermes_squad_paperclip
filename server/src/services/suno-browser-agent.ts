@@ -150,17 +150,25 @@ export class SunoBrowserAgent {
 
         if (!promptEl) return { error: "no textarea found on page", textareaCount: all.length };
 
+        // Suno's prompt field has a ~1000 char limit — truncate gracefully.
+        const maxLen = 950;
+        let prompt = ${JSON.stringify(data.soundPrompt)};
+        if (prompt.length > maxLen) {
+          prompt = prompt.slice(0, maxLen - 3) + '...';
+        }
+
         // Use the native value setter so React's controlled-component layer picks it up.
         const proto = window.HTMLTextAreaElement.prototype;
         const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
         promptEl.focus();
-        nativeSetter.call(promptEl, ${JSON.stringify(data.soundPrompt)});
+        nativeSetter.call(promptEl, prompt);
         promptEl.dispatchEvent(new Event('input', { bubbles: true }));
         promptEl.dispatchEvent(new Event('change', { bubbles: true }));
 
         return {
           success: true,
-          promptFilled: promptEl.value.length,
+          promptFilled: prompt.length,
+          promptTruncated: ${JSON.stringify(data.soundPrompt)}.length > maxLen,
           placeholder: promptEl.placeholder,
           textareaCount: all.length,
           visibleCount: visible.length,
@@ -510,9 +518,14 @@ export class SunoBrowserAgent {
  * Handles errors gracefully and logs them via the Paperclip logger.
  */
 export async function generateViaSuno(prompt: string): Promise<SunoResult> {
-  // Strategy: try CDP browser automation first, fall back to cookie client
+  // Truncate to Suno's 1000-char prompt limit
+  const MAX_SUNO_PROMPT = 950;
+  const truncatedPrompt = prompt.length > MAX_SUNO_PROMPT
+    ? prompt.slice(0, MAX_SUNO_PROMPT - 3) + "..."
+    : prompt;
+
   logger.info(
-    { promptLength: prompt.length },
+    { originalLength: prompt.length, truncatedLength: truncatedPrompt.length },
     "[Raziel] generateViaSuno — attempting CDP then cookie fallback",
   );
 
@@ -521,7 +534,7 @@ export async function generateViaSuno(prompt: string): Promise<SunoResult> {
   // Attempt 1: CDP browser automation
   try {
     const agent = new SunoBrowserAgent();
-    const result = await agent.runFullPipeline({ soundPrompt: prompt });
+    const result = await agent.runFullPipeline({ soundPrompt: truncatedPrompt });
     logger.info(
       { songId: result.songId, audioUrl: result.audioUrl, method: "cdp" },
       "[Raziel] generateViaSuno — CDP succeeded",
@@ -545,7 +558,7 @@ export async function generateViaSuno(prompt: string): Promise<SunoResult> {
   }
 
   logger.info("[Raziel] Falling back to cookie-based Suno client");
-  const cookieResult = await generateViaSunoCookie(prompt, {
+  const cookieResult = await generateViaSunoCookie(truncatedPrompt, {
     makeInstrumental: true,
   });
 

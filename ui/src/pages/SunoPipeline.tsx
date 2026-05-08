@@ -1050,11 +1050,19 @@ function SunoCard({ issue, agentNameById, onChangeStatus, onDelete }: SunoCardPr
           { key: "lyrics", label: "Lyrics", agent: "Zadkiel" },
           { key: "soundPrompt", label: "Sound", agent: "Uriel" },
           { key: "visualPrompt", label: "Visual", agent: "Jophiel" },
-          { key: "minimaxAudioUrl", label: "Audio", agent: "MiniMax" },
+          { key: "audioUrl", label: "Audio", agent: "Music" },
           { key: "releaseCopy", label: "Copy", agent: "Gabriel" },
         ];
-        const doneCount = pipeline.filter(s => !!stages[s.key]).length;
-        const currentStage = pipeline.find(s => !stages[s.key]);
+        // Audio is done if either suno (audioUrl) or minimax (minimaxAudioUrl) has it
+        const hasAudio = !!stages.audioUrl || !!stages.minimaxAudioUrl;
+        const doneCount = pipeline.filter(s => {
+          if (s.key === "audioUrl") return hasAudio;
+          return !!stages[s.key];
+        }).length;
+        const currentStage = pipeline.find(s => {
+          if (s.key === "audioUrl") return !hasAudio;
+          return !stages[s.key];
+        });
         return (
           <div className="flex items-center gap-1.5 mt-0.5">
             <div className="flex gap-0.5">
