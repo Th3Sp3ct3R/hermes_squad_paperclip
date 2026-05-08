@@ -146,6 +146,7 @@ interface AngelInvocationDialogProps {
   chakra: SunoChakra;
   preloadedConcept?: string;
   preloadedGenre?: string;
+  musicBackend?: "minimax" | "suno";
   onDispatched?: () => void;
 }
 
@@ -158,6 +159,7 @@ export function AngelInvocationDialog({
   chakra,
   preloadedConcept,
   preloadedGenre,
+  musicBackend = "minimax",
   onDispatched,
 }: AngelInvocationDialogProps) {
   const [step, setStep] = useState<InvocationStep>("ENTERING");
@@ -246,7 +248,7 @@ export function AngelInvocationDialog({
       const result = await sunoPipelineApi.autoRun(
         createdIssueIdRef.current,
         companyId,
-        { musicBackend: "minimax" },
+        { musicBackend },
       );
       return result;
     },

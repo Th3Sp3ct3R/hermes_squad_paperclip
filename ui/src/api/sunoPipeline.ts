@@ -430,7 +430,7 @@ export interface AutoRunInput {
    *                  for Raziel browser automation (default)
    *   - "skip"     — no music gen, both audio columns stay null
    */
-  musicBackend?: "minimax" | "parallel" | "skip";
+  musicBackend?: "minimax" | "suno" | "skip";
   /** Optional hints applied to ALL prompt builders. */
   hints?: Record<string, unknown>;
 }

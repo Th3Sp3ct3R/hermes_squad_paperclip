@@ -59,7 +59,7 @@ import {
   persistAudioFromUrl,
   type MinimaxMusicModel,
 } from "../services/minimax-music.js";
-// Suno browser automation removed — MiniMax is the sole music backend
+import { generateViaSuno } from "../services/suno-browser-agent.js";
 import {
   parseBatchRequest,
   runWithConcurrency,
@@ -218,7 +218,7 @@ const autoRunSchema = z.object({
    *                  independently). Raphael picks canonAudioVariant.
    *   - "skip"     — no music gen, leave both url columns null for manual
    */
-  musicBackend: z.enum(["minimax", "skip"]).default("minimax"),
+  musicBackend: z.enum(["minimax", "suno", "skip"]).default("minimax"),
   /** Optional hints applied to ALL prompt builders. */
   hints: z.record(z.unknown()).optional(),
 });
@@ -334,7 +334,7 @@ const batchCreateSchema = z.object({
 const batchExecuteSchema = z.object({
   companyId: z.string().uuid(),
   /** Backend per song. Default "minimax" (fast, server-side, no Chrome dep). */
-  musicBackend: z.enum(["minimax"]).default("minimax"),
+  musicBackend: z.enum(["minimax", "suno"]).default("minimax"),
   /** Max concurrent generations. Default 5. Suno backend forces 1 (browser bound). */
   concurrency: z.number().int().min(1).max(20).default(5),
 });
@@ -1791,7 +1791,7 @@ export function sunoPipelineRoutes(db: Db) {
         return;
       }
 
-      const concurrency = body.concurrency;
+      const concurrency = body.musicBackend === "suno" ? 1 : body.concurrency;
 
       logger.info(
         {
@@ -1965,8 +1965,45 @@ export function sunoPipelineRoutes(db: Db) {
           return { kind: "minimax", songId, audioUrl: persisted.contentPath };
         }
 
-        // No other backend — MiniMax is the sole music generator
-        throw new Error("MiniMax generation failed — no fallback available");
+        // Suno backend — sequential through the same browser tab.
+        if (body.musicBackend === "suno") {
+          const sunoResult = await generateViaSuno(soundPrompt);
+          await db
+            .update(sunoIssues)
+            .set({
+              audioUrl: sunoResult.audioUrl,
+              sunoSongId: sunoResult.songId,
+              status: "REVIEW",
+              metadata: appendHistory(
+                {
+                  ...meta,
+                  stages: {
+                    ...stages,
+                    audioUrl: sunoResult.audioUrl,
+                    sunoSongId: sunoResult.songId,
+                    sunoVariants: sunoResult.variants,
+                  },
+                  lastMusicBackend: "suno",
+                },
+                {
+                  stage: "audioUrl",
+                  output: sunoResult.audioUrl,
+                  at: new Date().toISOString(),
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  agentName: "Raziel/Suno (batch)",
+                  status: "REVIEW" as SunoStatus,
+                },
+              ),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, issue.id), eq(sunoIssues.companyId, body.companyId)));
+          await generateThumbnail(issue.id);
+          return { kind: "suno", songId: sunoResult.songId, audioUrl: sunoResult.audioUrl };
+        }
+
+        throw new Error("Unknown music backend");
       })
         .then((results) => {
           const succeeded = results.filter((r) => r.ok).length;
@@ -2378,15 +2415,95 @@ export function sunoPipelineRoutes(db: Db) {
     },
   );
 
-  // ── dispatch-suno REMOVED — MiniMax is the sole music backend ───────────
-  // Use dispatch-minimax instead.
+  // ── POST /:id/dispatch-suno ──────────────────────────────────────────────
+  // Standalone Suno dispatch via browser automation (Raziel).
+  // Requires Chrome running with --remote-debugging-port=9222 + Suno login.
+  router.post("/suno-pipeline/:id/dispatch-suno", async (req, res) => {
+    const id = req.params.id!;
+    const body = req.body as { companyId: string; prompt?: string };
+    if (!body.companyId) { res.status(400).json({ error: "companyId required" }); return; }
+    assertCompanyAccess(req, body.companyId);
 
-  // dispatch-suno removed — returns 410 Gone
-  router.post("/suno-pipeline/:id/dispatch-suno", (_req, res) => {
-    res.status(410).json({ error: "Suno browser automation removed. Use dispatch-minimax." });
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+    const stages = (meta.stages && typeof meta.stages === "object"
+      ? (meta.stages as Record<string, unknown>)
+      : {}) as Record<string, unknown>;
+
+    const prompt = body.prompt ??
+      (typeof stages.soundPrompt === "string" ? (stages.soundPrompt as string) : "");
+
+    if (!prompt) {
+      res.status(422).json({ error: "dispatch-suno requires a soundPrompt" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+
+    try {
+      const result = await generateViaSuno(prompt);
+
+      const nextMeta = appendHistory(
+        {
+          ...meta,
+          stages: {
+            ...stages,
+            audioUrl: result.audioUrl,
+            sunoSongId: result.songId,
+            sunoVariants: result.variants,
+          },
+          lastMusicBackend: "suno",
+        },
+        {
+          stage: "audioUrl",
+          output: result.audioUrl,
+          at: new Date().toISOString(),
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          agentName: "Raziel/Suno (manual)",
+          status: existing.status as SunoStatus,
+        },
+      );
+
+      const [updated] = await db
+        .update(sunoIssues)
+        .set({
+          audioUrl: result.audioUrl,
+          sunoSongId: result.songId,
+          metadata: nextMeta,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+        .returning();
+
+      await logActivity(db, {
+        companyId: body.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "suno_issue.suno_dispatched",
+        entityType: "suno_issue",
+        entityId: id,
+        details: {
+          songId: result.songId,
+          audioUrl: result.audioUrl,
+          duration: result.duration,
+          title: result.title,
+          variantCount: result.variants.length,
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      // Suno CDP failed — return error with details
+      res.status(422).json({
+        error: `Suno browser automation failed: ${err instanceof Error ? err.message : String(err)}`,
+        hint: "Ensure Chrome is running with --remote-debugging-port=9222 and you're logged into suno.com",
+      });
+    }
   });
-
-  // ── (dispatch-suno body removed — 270 lines of Suno browser automation code deleted) ──
 
 
   // ── POST /:id/fail ────────────────────────────────────────────────────────
@@ -3310,8 +3427,8 @@ export function sunoPipelineRoutes(db: Db) {
         throw new Error("auto-run music: no soundPrompt in stages — run Uriel first");
       }
 
-      // ── MiniMax B-side (runs when backend is "minimax" or "parallel") ──
-      if (body.musicBackend === "minimax" || body.musicBackend === "parallel") {
+      // ── MiniMax (runs when backend is "minimax") ──
+      if (body.musicBackend === "minimax") {
         const chakraKey = (issue.targetChakra ?? null) as ChakraKey | null;
         const prompt = buildMiniMaxPrompt(rawSoundPrompt, chakraKey, body.hints as { bpm?: number; identity?: string } | null);
 
@@ -3411,7 +3528,79 @@ export function sunoPipelineRoutes(db: Db) {
         }
       }
 
-      // ── Suno A-side REMOVED — MiniMax is the sole music backend ──
+      // ── Suno A-side via Raziel browser automation ──
+      if (body.musicBackend === "suno") {
+        try {
+          const sunoResult = await generateViaSuno(rawSoundPrompt);
+          const meta3 = (issue.metadata ?? {}) as Record<string, unknown>;
+          const stages3 = (meta3.stages && typeof meta3.stages === "object"
+            ? (meta3.stages as Record<string, unknown>)
+            : {}) as Record<string, unknown>;
+          const nextMeta = appendHistory(
+            {
+              ...meta3,
+              stages: {
+                ...stages3,
+                audioUrl: sunoResult.audioUrl,
+                sunoSongId: sunoResult.songId,
+                sunoVariants: sunoResult.variants,
+              },
+              lastMusicBackend: "suno",
+            },
+            {
+              stage: "audioUrl",
+              output: sunoResult.audioUrl,
+              at: new Date().toISOString(),
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              agentName: "Raziel/Suno (auto-run)",
+              status: issue.status as SunoStatus,
+            },
+          );
+          const [sunoUpdated] = await db
+            .update(sunoIssues)
+            .set({
+              audioUrl: sunoResult.audioUrl,
+              sunoSongId: sunoResult.songId,
+              metadata: nextMeta,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+            .returning();
+          if (sunoUpdated) issue = sunoUpdated;
+
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.auto_run.suno_generated",
+            entityType: "suno_issue",
+            entityId: issue.id,
+            details: {
+              backend: "suno",
+              songId: sunoResult.songId,
+              audioUrl: sunoResult.audioUrl,
+            },
+          });
+        } catch (err) {
+          // Suno failed — log but don't crash the pipeline
+          await logActivity(db, {
+            companyId: body.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "suno_issue.auto_run.suno_failed",
+            entityType: "suno_issue",
+            entityId: issue.id,
+            details: { backend: "suno", error: err instanceof Error ? err.message : String(err) },
+          });
+          // Don't throw — the song continues without Suno audio
+        }
+      }
 
     }
 
