@@ -16,7 +16,7 @@ import { useDialog } from "@/context/DialogContext";
 const NAV_LINKS = [
   { to: "/dashboard", label: "The Observatory" },
   { to: "/agents", label: "Choir" },
-  { to: "/suno", label: "Hermetica", title: "The soul, descending into incarnation, acquires the qualities of each sphere; ascending in gnosis, it surrenders them and returns to source. \u2014 Discourse on the Eighth and Ninth" },
+  { to: "/music", label: "Hermetica", title: "The soul, descending into incarnation, acquires the qualities of each sphere; ascending in gnosis, it surrenders them and returns to source. \u2014 Discourse on the Eighth and Ninth" },
   { to: "/initiate", label: "The Initiate\u2019s Path" },
   { to: "/activity", label: "Activity" },
   { to: "/costs", label: "Ledger" },

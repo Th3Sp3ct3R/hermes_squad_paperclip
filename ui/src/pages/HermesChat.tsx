@@ -2,7 +2,7 @@
  * HermesChat — JARVIS-style voice agent conversation UI.
  *
  * Features:
- * - Canvas2D audio-reactive orb (HermesOrb) as centerpiece
+ * - Portrait orb centerpiece that wraps Hermes' face while speaking
  * - Inline waveform bar in the input area during active voice
  * - Text + voice input with VAD auto-detection
  * - Hermes responds with text + streamed audio playback
@@ -14,7 +14,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { cn } from "@/lib/utils";
 import { encodeWAV, arrayBufferToBase64, base64ToArrayBuffer } from "@/lib/audioEncoder";
-import { HermesOrb } from "@/components/HermesOrb";
+import { formatHermesMicError } from "@/lib/hermes-mic-errors";
+import { HermesPortraitOrb } from "@/components/HermesPortraitOrb";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -386,13 +387,12 @@ export function HermesChat() {
       setVoiceState("connecting");
     } catch (err) {
       console.error("[HermesChat] startVoice failed:", err);
-      const msg = (err as Error)?.message ?? String(err);
       setMessages((prev) => [
         ...prev,
         {
           id: `err-${Date.now()}`,
           role: "hermes",
-          text: `Voice init failed: ${msg}. Try using text input instead.`,
+          text: formatHermesMicError(err),
           timestamp: new Date(),
         },
       ]);
@@ -477,188 +477,265 @@ export function HermesChat() {
     speaking: "Speaking",
   };
 
+  const statusCopy: Record<VoiceState, string> = {
+    idle: "Click the orb to begin, or type below if you want a quieter start.",
+    connecting: "Negotiating a secure voice channel.",
+    listening: "The chamber is open. Speak whenever you're ready.",
+    thinking: "Hermes is composing a reply.",
+    speaking: "Hermes is speaking back through the orb.",
+  };
+
   return (
-    <div className="flex flex-col h-[calc(100vh-64px)]">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-border/20">
+    <div className="relative isolate flex min-h-[calc(100vh-64px)] flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(78,168,255,0.08),_transparent_30%),radial-gradient(circle_at_80%_12%,_rgba(185,100,255,0.08),_transparent_28%),linear-gradient(180deg,_rgba(2,6,12,0.98),_rgba(3,7,14,0.96))]">
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(circle_at_center,_black_20%,_transparent_80%)]" />
+      <div className="pointer-events-none absolute inset-x-8 top-16 h-px bg-gradient-to-r from-transparent via-cyan-400/20 to-transparent" />
+      <div className="pointer-events-none absolute inset-x-8 bottom-24 h-px bg-gradient-to-r from-transparent via-fuchsia-400/10 to-transparent" />
+
+      <div className="relative z-10 flex items-center justify-between border-b border-white/10 px-6 py-3 backdrop-blur-sm">
         <div className="flex items-center gap-3">
           <span className="text-xl glow-b">&#9791;</span>
           <div>
-            <h1 className="text-sm font-semibold tracking-wider uppercase" style={{ fontFamily: '"Geist Mono", ui-monospace, monospace', letterSpacing: '0.14em' }}>
+            <h1 className="text-sm font-semibold tracking-wider uppercase" style={{ fontFamily: '"Geist Mono", ui-monospace, monospace', letterSpacing: "0.14em" }}>
               Hermes
             </h1>
-            <p className="text-[10px] text-muted-foreground/50 tracking-wide">
-              {voiceState === "idle" ? "Voice + Text" : stateLabel[voiceState]}
+            <p className="text-[10px] text-muted-foreground/50 tracking-[0.16em] uppercase">
+              Orb-led voice console
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {voiceActive && (
-            <span className={cn(
+          <span
+            className={cn(
               "hermes-state-badge",
               voiceState === "listening" && "text-[#4ea8ff]",
               voiceState === "thinking" && "text-[#b964ff]",
               voiceState === "speaking" && "text-[#4ea8ff]",
               voiceState === "connecting" && "text-muted-foreground/40",
-            )}>
-              {stateLabel[voiceState]}
-            </span>
-          )}
-          {isConnected && (
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/80" />
-          )}
-        </div>
-      </div>
-
-      {/* Messages + Orb */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 scrollbar-auto-hide">
-        {/* Empty state — orb is the hero */}
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center gap-4">
-            <HermesOrb
-              state={voiceState}
-              analyserNode={analyserNode}
-              size={220}
-              onClick={voiceActive ? stopVoice : startVoice}
-            />
-
-            <div className="space-y-1.5 mt-2">
-              <p className="text-muted-foreground/60 text-xs font-medium tracking-wide">
-                {voiceState === "idle" && "Click the orb to speak"}
-                {voiceState === "connecting" && "Establishing connection..."}
-                {voiceState === "listening" && "Listening \u2014 speak now"}
-                {voiceState === "thinking" && "Processing..."}
-                {voiceState === "speaking" && "Hermes is speaking"}
-              </p>
-              {voiceState === "idle" && (
-                <p className="text-muted-foreground/25 text-[11px] max-w-xs">
-                  Or type below. Voice mode auto-detects speech and Hermes responds aloud.
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Compact orb when messages exist */}
-        {messages.length > 0 && (
-          <div className="flex justify-center py-2">
-            <HermesOrb
-              state={voiceState}
-              analyserNode={analyserNode}
-              size={80}
-              onClick={voiceActive ? stopVoice : startVoice}
-            />
-          </div>
-        )}
-
-        {/* Chat messages */}
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={cn(
-              "flex hermes-msg-enter",
-              msg.role === "user" ? "justify-end" : "justify-start"
             )}
           >
-            <div
-              className={cn(
-                "max-w-[75%] rounded-xl px-4 py-3 text-sm leading-relaxed",
-                msg.role === "user"
-                  ? "hermes-user-bubble text-foreground"
-                  : "hermes-msg-bubble bg-transparent text-foreground/90"
-              )}
-            >
-              {msg.role === "hermes" && (
-                <span className="text-[10px] text-[#4ea8ff]/50 block mb-1" style={{ fontFamily: '"Geist Mono", ui-monospace, monospace', letterSpacing: '0.12em' }}>
-                  &#9791; HERMES
-                </span>
-              )}
-              {msg.text}
-              {msg.fromVoice && (
-                <span className="text-[9px] text-muted-foreground/25 ml-2 uppercase tracking-wider">voice</span>
-              )}
-            </div>
-          </div>
-        ))}
-
-        {/* Thinking indicator */}
-        {voiceState === "thinking" && (
-          <div className="flex justify-start hermes-msg-enter">
-            <div className="hermes-msg-bubble rounded-xl px-4 py-3 text-sm">
-              <span className="text-[10px] text-[#b964ff]/50 block mb-1.5" style={{ fontFamily: '"Geist Mono", ui-monospace, monospace', letterSpacing: '0.12em' }}>
-                &#9791; HERMES
-              </span>
-              <span className="inline-flex gap-1.5 items-center">
-                <span className="w-1 h-1 bg-[#b964ff]/50 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                <span className="w-1 h-1 bg-[#b964ff]/50 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                <span className="w-1 h-1 bg-[#b964ff]/50 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-              </span>
-            </div>
-          </div>
-        )}
-
-        <div ref={chatEndRef} />
+            {voiceState === "idle" ? "Voice + Text" : stateLabel[voiceState]}
+          </span>
+          <span className={cn("h-1.5 w-1.5 rounded-full", isConnected ? "bg-emerald-500/80" : "bg-amber-500/60")} />
+        </div>
       </div>
 
-      {/* Waveform + Input bar */}
-      <div className="border-t border-border/20 px-6 py-3">
-        <div className="max-w-3xl mx-auto space-y-2">
-          {/* Waveform bar — visible when voice is active */}
-          <WaveformBar analyserNode={analyserNode} active={voiceActive} />
+      <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
+        <section className="overflow-hidden rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(10,16,28,0.95),rgba(4,8,16,0.88))] shadow-[0_30px_100px_rgba(0,0,0,0.42)]">
+          <div className="grid min-h-[36rem] gap-0 lg:grid-cols-[minmax(0,1.08fr)_minmax(340px,0.92fr)]">
+            <div className="relative flex flex-col items-center justify-center gap-6 px-6 py-8 sm:px-8 lg:px-10">
+              <div className="pointer-events-none absolute inset-x-12 top-10 h-px bg-gradient-to-r from-transparent via-cyan-400/25 to-transparent" />
+              <div className="pointer-events-none absolute inset-x-20 top-24 h-px bg-gradient-to-r from-transparent via-white/8 to-transparent" />
+              <div className="pointer-events-none absolute inset-8 rounded-[28px] border border-white/5 bg-[radial-gradient(circle_at_center,_rgba(78,168,255,0.08),_transparent_48%)]" />
 
-          <div className="flex items-center gap-3">
-            {/* Voice toggle */}
-            <button
-              onClick={voiceActive ? stopVoice : startVoice}
-              className={cn(
-                "shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300",
-                voiceActive
-                  ? "bg-red-500/15 border border-red-500/40 text-red-400 hover:bg-red-500/25"
-                  : "bg-white/[0.03] border border-border/30 text-muted-foreground/50 hover:border-border/60 hover:text-muted-foreground"
-              )}
-              title={voiceActive ? "Stop voice" : "Start voice input"}
-            >
-              {voiceActive ? (
-                <svg viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
-                  <rect x="6" y="6" width="12" height="12" rx="2" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                </svg>
-              )}
-            </button>
+              <div className="relative flex items-center justify-center">
+                <div className="absolute inset-[-2rem] rounded-full border border-cyan-400/12 animate-[spin_22s_linear_infinite]" />
+                <div className="absolute inset-[-3rem] rounded-full border border-fuchsia-400/10 border-dashed animate-[spin_38s_linear_infinite_reverse]" />
+                <div className="absolute inset-[-4.25rem] rounded-full bg-cyan-500/10 blur-3xl" />
+                <HermesPortraitOrb
+                  state={voiceState}
+                  analyserNode={analyserNode}
+                  size={voiceState === "idle" ? 272 : voiceState === "speaking" ? 360 : 324}
+                  onClick={voiceActive ? stopVoice : startVoice}
+                />
+              </div>
 
-            {/* Text input */}
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Talk to Hermes..."
-              className="flex-1 bg-white/[0.03] border border-border/25 rounded-lg px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/25 focus:outline-none focus:border-border/50 transition-colors"
-            />
+              <div className="max-w-xl space-y-2 text-center">
+                <p className="text-[10px] uppercase tracking-[0.42em] text-cyan-200/70">
+                  Jarvis-style voice core
+                </p>
+                <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                  {voiceState === "idle"
+                    ? "Hermes is standing by"
+                    : `${stateLabel[voiceState]} in progress`}
+                </h2>
+                <p className="text-sm text-muted-foreground/75">
+                  {statusCopy[voiceState]}
+                </p>
+              </div>
 
-            {/* Send */}
-            <button
-              onClick={sendText}
-              disabled={!inputText.trim()}
-              className={cn(
-                "shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all",
-                inputText.trim()
-                  ? "bg-white/[0.06] border border-border/30 text-foreground/70 hover:bg-white/10 hover:text-foreground"
-                  : "bg-transparent border border-border/15 text-muted-foreground/20 cursor-not-allowed"
-              )}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
-                <path d="M22 2L11 13" />
-                <path d="M22 2L15 22L11 13L2 9L22 2Z" />
-              </svg>
-            </button>
+              <div className="grid w-full max-w-2xl gap-2 sm:grid-cols-3">
+                {[
+                  {
+                    label: isConnected ? "Channel live" : "Channel offline",
+                    value: voiceActive ? "Voice active" : "Text ready",
+                    tone: isConnected ? "text-emerald-300" : "text-amber-300",
+                  },
+                  {
+                    label: "Current mode",
+                    value: voiceState === "idle" ? "Standby" : stateLabel[voiceState],
+                    tone:
+                      voiceState === "thinking"
+                        ? "text-[#b964ff]"
+                        : voiceState === "speaking" || voiceState === "listening"
+                          ? "text-[#4ea8ff]"
+                          : "text-foreground/75",
+                  },
+                  {
+                    label: "Transcript",
+                    value: messages.length > 0 ? `${messages.length} entries` : "Awaiting first signal",
+                    tone: "text-foreground/75",
+                  },
+                ].map((chip) => (
+                  <div
+                    key={chip.label}
+                    className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-left backdrop-blur-sm"
+                  >
+                    <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/55">
+                      {chip.label}
+                    </div>
+                    <div className={cn("mt-1 text-sm font-medium", chip.tone)}>
+                      {chip.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex min-h-0 flex-col border-t border-white/10 bg-black/28 lg:border-l lg:border-t-0">
+              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/55">
+                    Signal log
+                  </div>
+                  <div className="text-sm font-medium text-foreground/80">
+                    Transcription and replies
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] uppercase tracking-[0.28em] text-muted-foreground/50">
+                    {voiceState === "idle" ? "Idle" : stateLabel[voiceState]}
+                  </span>
+                  {isConnected && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/80" />}
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 scrollbar-auto-hide min-h-[18rem] max-h-[24rem] lg:max-h-none">
+                {messages.length === 0 ? (
+                  <div className="flex h-full items-center justify-center rounded-2xl border border-white/8 bg-white/[0.02] px-6 py-10 text-center">
+                    <div className="max-w-sm space-y-2">
+                      <p className="text-xs uppercase tracking-[0.32em] text-muted-foreground/45">
+                        Awaiting transmission
+                      </p>
+                      <p className="text-sm text-muted-foreground/70">
+                        The orb is active even before the first line arrives. Start speaking, or type a command below.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  messages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={cn(
+                        "flex hermes-msg-enter",
+                        msg.role === "user" ? "justify-end" : "justify-start",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
+                          msg.role === "user"
+                            ? "hermes-user-bubble text-foreground"
+                            : "hermes-msg-bubble bg-transparent text-foreground/90",
+                        )}
+                      >
+                        {msg.role === "hermes" && (
+                          <span
+                            className="mb-1 block text-[10px] text-[#4ea8ff]/50"
+                            style={{ fontFamily: '"Geist Mono", ui-monospace, monospace', letterSpacing: "0.12em" }}
+                          >
+                            &#9791; HERMES
+                          </span>
+                        )}
+                        {msg.text}
+                        {msg.fromVoice && (
+                          <span className="ml-2 text-[9px] uppercase tracking-wider text-muted-foreground/25">
+                            voice
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+
+                {voiceState === "thinking" && (
+                  <div className="flex justify-start hermes-msg-enter">
+                    <div className="hermes-msg-bubble rounded-2xl px-4 py-3 text-sm">
+                      <span
+                        className="mb-1.5 block text-[10px] text-[#b964ff]/50"
+                        style={{ fontFamily: '"Geist Mono", ui-monospace, monospace', letterSpacing: "0.12em" }}
+                      >
+                        &#9791; HERMES
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="h-1 w-1 rounded-full bg-[#b964ff]/50 animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <span className="h-1 w-1 rounded-full bg-[#b964ff]/50 animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <span className="h-1 w-1 rounded-full bg-[#b964ff]/50 animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div ref={chatEndRef} />
+              </div>
+            </div>
           </div>
-        </div>
+        </section>
+
+        <section className="rounded-[28px] border border-white/10 bg-black/28 px-4 py-4 shadow-[0_12px_60px_rgba(0,0,0,0.24)] backdrop-blur-md">
+          <div className="mx-auto max-w-4xl space-y-2">
+            <WaveformBar analyserNode={analyserNode} active={voiceActive} />
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={voiceActive ? stopVoice : startVoice}
+                className={cn(
+                  "shrink-0 flex h-11 w-11 items-center justify-center rounded-full border transition-all duration-300",
+                  voiceActive
+                    ? "border-red-500/40 bg-red-500/15 text-red-400 hover:bg-red-500/25"
+                    : "border-white/10 bg-white/[0.03] text-muted-foreground/55 hover:border-white/20 hover:text-muted-foreground",
+                )}
+                title={voiceActive ? "Stop voice" : "Start voice input"}
+              >
+                {voiceActive ? (
+                  <svg viewBox="0 0 24 24" fill="currentColor" className="h-3.5 w-3.5">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                  </svg>
+                )}
+              </button>
+
+              <input
+                type="text"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Talk to Hermes..."
+                className="flex-1 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/25 focus:border-white/20 focus:outline-none"
+              />
+
+              <button
+                onClick={sendText}
+                disabled={!inputText.trim()}
+                className={cn(
+                  "shrink-0 flex h-11 w-11 items-center justify-center rounded-full border transition-all",
+                  inputText.trim()
+                    ? "border-white/10 bg-white/[0.06] text-foreground/70 hover:bg-white/10 hover:text-foreground"
+                    : "border-white/10 bg-transparent text-muted-foreground/20 cursor-not-allowed",
+                )}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5">
+                  <path d="M22 2L11 13" />
+                  <path d="M22 2L15 22L11 13L2 9L22 2Z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

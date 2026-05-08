@@ -614,6 +614,9 @@ export function Dashboard() {
             cacheHitRate={usageStats?.cacheHitRate ?? 0}
           />
 
+          {/* ── Songs Metrics · Frequency Distribution ─────────────── */}
+          <SongsMetricsPanel companyId={selectedCompanyId!} />
+
           {/* ── 3. The Ephemeris — Full-width Usage Trend ──────────────── */}
           <div className="rounded border border-[rgba(255,255,255,0.14)] bg-transparent p-5">
             <div className="flex items-center justify-between mb-4">
@@ -843,9 +846,6 @@ export function Dashboard() {
             }
           />
 
-          {/* ── Songs Metrics · Frequency Distribution ─────────────── */}
-          <SongsMetricsPanel companyId={selectedCompanyId!} />
-
           {/* ── 4. Recent Tasks ───────────────────────────────────────── */}
           <div className="min-w-0">
             <h3 className="seclabel r mb-3">
@@ -995,10 +995,9 @@ function SongsMetricsPanel({ companyId }: { companyId: string }) {
   const mins = Math.round(metrics.totalMinutes % 60);
 
   return (
-    <div className="grid lg:grid-cols-3 gap-4">
-      {/* Songs Metrics + Brainwave Tuning — left, 2 cols */}
+    <div className="space-y-4">
       <div
-        className="lg:col-span-2 rounded-xl border p-5 space-y-4"
+        className="rounded-xl border p-5 space-y-4"
         style={{ borderColor: "rgba(255,255,255,0.08)" }}
       >
         <div className="flex items-center justify-between">
@@ -1039,7 +1038,6 @@ function SongsMetricsPanel({ companyId }: { companyId: string }) {
           </div>
         </div>
 
-        {/* Brainwave band cards */}
         <div className="grid grid-cols-2 gap-3 pt-2">
           <BrainwaveBand
             symbol="θ"
@@ -1074,13 +1072,22 @@ function SongsMetricsPanel({ companyId }: { companyId: string }) {
             color="#3b82f6"
           />
         </div>
+      </div>
 
-        {/* Top genres */}
-        {metrics.topGenres.length > 0 && (
-          <div className="pt-3 border-t border-border/30 space-y-2">
-            <h4 className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Modes
-            </h4>
+      <div
+        className="rounded-xl border p-5 space-y-3"
+        style={{ borderColor: "rgba(255,255,255,0.08)" }}
+      >
+        <div className="flex items-center justify-between">
+          <h4 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Modes
+          </h4>
+          <span className="text-[10px] text-muted-foreground">
+            {metrics.topGenres.length > 0 ? `${metrics.topGenres.length} dominant` : "No modes yet"}
+          </span>
+        </div>
+        {metrics.topGenres.length > 0 ? (
+          <div className="space-y-2">
             {metrics.topGenres.map(([genre, count]) => {
               const pct = Math.round(
                 (count / Math.max(1, metrics.totalTracks)) * 100,
@@ -1106,10 +1113,13 @@ function SongsMetricsPanel({ companyId }: { companyId: string }) {
               );
             })}
           </div>
+        ) : (
+          <div className="py-3 text-sm text-muted-foreground">
+            No dominant modes yet.
+          </div>
         )}
       </div>
 
-      {/* Songs by Chakra — right, 1 col */}
       <div
         className="rounded-xl border p-5 space-y-3"
         style={{ borderColor: "rgba(255,255,255,0.08)" }}

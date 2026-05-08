@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { arrayBufferToBase64, base64ToArrayBuffer } from "@/lib/audioEncoder";
-import { HermesOrb } from "./HermesOrb";
+import { formatHermesMicError } from "@/lib/hermes-mic-errors";
+import { HermesPortraitOrb } from "./HermesPortraitOrb";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -30,6 +31,26 @@ interface ServerMessage {
   fullText?: string;
   partialText?: string;
   message?: string;
+}
+
+function OrbFrame({
+  state,
+  analyserNode,
+  size,
+  onClick,
+}: {
+  state: VoiceState;
+  analyserNode: AnalyserNode | null;
+  size: number;
+  onClick: () => void;
+}) {
+  return (
+    <div className="relative">
+      <div className="pointer-events-none absolute inset-[-10px] rounded-full border border-cyan-400/10 animate-[spin_22s_linear_infinite]" />
+      <div className="pointer-events-none absolute inset-[-16px] rounded-full border border-fuchsia-400/10 border-dashed animate-[spin_34s_linear_infinite_reverse]" />
+      <HermesPortraitOrb state={state} analyserNode={analyserNode} size={size} onClick={onClick} />
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -231,7 +252,7 @@ export function HermesFloatingOrb() {
       console.error("[HermesFloating] mic failed:", err);
       setMessages((prev) => [...prev, {
         id: `e-${Date.now()}`, role: "hermes",
-        text: `Mic access failed: ${(err as Error)?.message ?? err}. Use text input.`,
+        text: formatHermesMicError(err),
       }]);
       setVoiceState("idle");
       setOpen(true);
@@ -303,7 +324,7 @@ export function HermesFloatingOrb() {
   if (!open) {
     return (
       <div className="fixed bottom-6 right-6 z-50">
-        <HermesOrb
+        <OrbFrame
           state={voiceState}
           analyserNode={analyserNode}
           size={64}
@@ -432,7 +453,7 @@ export function HermesFloatingOrb() {
       </div>
 
       {/* The orb */}
-      <HermesOrb
+      <OrbFrame
         state={voiceState}
         analyserNode={analyserNode}
         size={64}

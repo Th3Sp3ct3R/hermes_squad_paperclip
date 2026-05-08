@@ -21,6 +21,7 @@ export const BOARD_ROUTE_ROOTS = new Set([
   // Suno + Hermes pages also live under /<companyPrefix>/...
   "hermes",
   "suno",
+  "music",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "docs", "instance"]);

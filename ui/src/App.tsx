@@ -153,6 +153,7 @@ function boardRoutes() {
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
+      <Route path="suno" element={<SunoPipeline />} />
       <Route path="music" element={<SunoPipeline />} />
       <Route path="initiate" element={<InitiatesPath />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />

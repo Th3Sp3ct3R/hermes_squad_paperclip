@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { encodeWAV, arrayBufferToBase64, base64ToArrayBuffer } from "../lib/audioEncoder";
+import { formatHermesMicError } from "../lib/hermes-mic-errors";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -242,7 +243,7 @@ export function useHermesVoice(options: HermesVoiceOptions = {}) {
       vadRef.current = vad;
       connect();
     } catch (err) {
-      options.onError?.(`Microphone access denied: ${(err as Error).message}`);
+      options.onError?.(formatHermesMicError(err));
       setState("idle");
     }
   }, [connect, stopPlayback, options.onError]);
