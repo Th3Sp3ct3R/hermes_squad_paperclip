@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { sunoPipelineApi, type CreateSunoIssueInput } from "@/api/sunoPipeline";
+import { sunoPipelineApi, SUNO_CHAKRA_FREQUENCIES } from "@/api/sunoPipeline";
 import type { SunoChakra } from "@/api/sunoPipeline";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/context/ToastContext";
@@ -152,26 +152,34 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
     speakResponse(text);
   }, [addMessage, speakResponse]);
 
-  const createSong = useCallback(async (presetId: string): Promise<boolean> => {
+  const createSong = useCallback(async (presetId: string): Promise<{ id: string; chakra: string; hz: number; genre: string; concept: string } | false> => {
     const preset = PRESET_CONCEPTS[presetId];
     if (!preset) return false;
+    const chakra = (Object.keys(CHAKRA_LABELS).find(
+      (k) => QUICK_PRESETS.find((p) => p.id === presetId)?.chakra === k
+    ) || "HEART") as SunoChakra;
+    const hz = SUNO_CHAKRA_FREQUENCIES[chakra] ?? 528;
     try {
       const issue = await sunoPipelineApi.create(companyId, {
         concept: preset.concept,
-        targetChakra: Object.keys(CHAKRA_LABELS).find(
-          (k) => QUICK_PRESETS.find((p) => p.id === presetId)?.chakra === k
-        ) as SunoChakra || "HEART",
+        targetChakra: chakra,
         genre: preset.genre,
       });
       await sunoPipelineApi.autoRun(issue.id, companyId, { musicBackend });
       queryClient.invalidateQueries({ queryKey: ["suno-pipeline", companyId] });
       onSongCreated?.();
-      return true;
+      return { id: issue.id.slice(0, 8), chakra, hz, genre: preset.genre, concept: preset.concept.slice(0, 80) };
     } catch (err) {
       pushToast({ tone: "error", title: "Failed to create song", body: String(err) });
       return false;
     }
   }, [companyId, musicBackend, queryClient, pushToast, onSongCreated]);
+
+  // Format song details for Hermes response
+  const formatSongDetails = (result: { id: string; chakra: string; hz: number; genre: string; concept: string }) => {
+    const chakraLabel = CHAKRA_LABELS[result.chakra] || result.chakra;
+    return `\n\n[ ♪ ${result.id} ]\n${result.concept}\n${chakraLabel} · ${result.hz} Hz · ${result.genre}`;
+  };
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -188,10 +196,10 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
       const label = id.replace(/-/g, " ");
       if (lower.includes(id) || lower.includes(label) || (lower.includes("deep") && lower.includes("coding") && id === "deep-coding")) {
         setVoiceState("thinking");
-        const ok = await createSong(id);
-        setVoiceState(ok ? "speaking" : "idle");
-        hermesRespond( ok
-          ? `Creating "${id.replace(/-/g, " ")}". I've dispatched it to the pipeline — ${musicBackend === "suno" ? "Raziel through the Suno gate" : "MiniMax"} will generate the audio.`
+        const result = await createSong(id);
+        setVoiceState(result ? "speaking" : "idle");
+        hermesRespond( result
+          ? `On it.${formatSongDetails(result as { id: string; chakra: string; hz: number; genre: string; concept: string })}`
           : `I tried but couldn't create that one. Check the pipeline status and try again.`);
         setTimeout(() => setVoiceState("idle"), 2000);
         return;
@@ -223,10 +231,9 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
     const conceptMatch =
       lower.match(/(?:i want|create|make|write|generate)\s+(?:a|an|me|us|)\s*(.+?)(?:song|track|beat|instrumental)?$/i) ||
       lower.match(/^(.+?)(?:song|track|instrumental|music)(?:\s+for|\s+about)?\s+(.+)/i);
-    // Also treat anything >15 chars that isn't clearly a question/greeting as a concept
-    const isQuestion = /^(?:what|how|who|why|when|where|can|do|did|is|are|will|would|could|should)/i.test(lower);
-    const isGreeting = /^(?:hi|hey|hello|yo|sup|good)/i.test(lower);
-    const shouldCreateSong = conceptMatch || (lower.length > 15 && !isQuestion && !isGreeting);
+    // Only create a song when intent is clearly about music — not general conversation
+    const hasMusicKeyword = /\b(song|track|beat|instrumental|music|drone|ambient|loop|vibe|produce|mix)\b/i.test(lower);
+    const shouldCreateSong = conceptMatch || (hasMusicKeyword && lower.length > 10);
     if (shouldCreateSong) {
       // Build concept from match or use the raw input cleaned up
       let concept = "";
@@ -255,7 +262,15 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
         });
         await sunoPipelineApi.autoRun(issue.id, companyId, { musicBackend });
         setVoiceState("speaking");
-        hermesRespond( `"${concept.slice(0, 100)}" is in the pipeline. The archangels are working on it now — check the board for progress.`);
+        const chakra = lower.includes("focus") || lower.includes("code") || lower.includes("deep") || lower.includes("study") ? "THIRD_EYE" :
+                        lower.includes("sleep") || lower.includes("night") || lower.includes("moon") ? "CROWN" :
+                        lower.includes("dark") || lower.includes("shadow") || lower.includes("gym") || lower.includes("heavy") ? "ROOT" :
+                        lower.includes("hip hop") || lower.includes("rap") || lower.includes("trap") || lower.includes("groove") ? "SACRAL" :
+                        lower.includes("calm") || lower.includes("warm") || lower.includes("sun") || lower.includes("morning") ? "SOLAR" :
+                        "HEART";
+        const hz = SUNO_CHAKRA_FREQUENCIES[chakra as SunoChakra] ?? 528;
+        const label = CHAKRA_LABELS[chakra] || chakra;
+        hermesRespond( `I've dispatched your working to the council.\n\n[ ♪ ${issue.id.slice(0, 8)} ] ${concept.slice(0, 80)}\n${label} · ${hz} Hz`);
       } catch (err) {
         setVoiceState("idle");
         hermesRespond( "Sorry, I couldn't create that one. The gate seemed blocked.");
@@ -382,10 +397,10 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
                   setInput("");
                   addMessage("user", `Create a ${preset.label.toLowerCase()} track`);
                   setVoiceState("thinking");
-                  const ok = await createSong(preset.id);
-                  setVoiceState(ok ? "speaking" : "idle");
-                  hermesRespond( ok
-                    ? `Dispatching a ${preset.label.toLowerCase()} track through the pipeline.`
+                  const result = await createSong(preset.id);
+                  setVoiceState(result ? "speaking" : "idle");
+                  hermesRespond( result
+                    ? `On it.${formatSongDetails(result as { id: string; chakra: string; hz: number; genre: string; concept: string })}`
                     : `Failed to create ${preset.label}.`);
                   setTimeout(() => setVoiceState("idle"), 2000);
                 }}
@@ -403,13 +418,14 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
                 setVoiceState("thinking");
                 const presets = Object.keys(PRESET_CONCEPTS);
                 let succeeded = 0;
+                let details = "";
                 for (const p of presets) {
-                  const ok = await createSong(p);
-                  if (ok) succeeded++;
+                  const result = await createSong(p);
+                  if (result) { succeeded++; details += formatSongDetails(result); }
                   await new Promise((r) => setTimeout(r, 500));
                 }
                 setVoiceState("speaking");
-                hermesRespond( `All ${succeeded} presets invoked. They'll populate the board as they generate.`);
+                hermesRespond( `${succeeded} of ${presets.length} presets dispatched:${details}`);
                 setTimeout(() => setVoiceState("idle"), 3000);
               }}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] border border-amber-700/30 bg-amber-950/30 text-amber-200/70 hover:bg-amber-900/40 hover:text-amber-100 transition-colors whitespace-nowrap"
