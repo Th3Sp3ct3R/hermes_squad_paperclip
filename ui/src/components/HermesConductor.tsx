@@ -126,6 +126,32 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
     ]);
   }, []);
 
+  /** Speak Hermes' response aloud using browser TTS */
+  const speakResponse = useCallback((text: string) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    // Cancel any in-progress speech
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.05;
+    utterance.pitch = 0.9;
+    // Prefer a deep/smooth English voice
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.name.includes("Daniel")) ||
+      voices.find(v => v.name.includes("Alex")) ||
+      voices.find(v => v.lang.startsWith("en") && v.name.includes("Male")) ||
+      voices.find(v => v.lang.startsWith("en"));
+    if (preferred) utterance.voice = preferred;
+    utterance.onstart = () => setVoiceState("speaking");
+    utterance.onend = () => setVoiceState("idle");
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  /** Add Hermes message and speak it */
+  const hermesRespond = useCallback((text: string) => {
+    hermesRespond( text);
+    speakResponse(text);
+  }, [addMessage, speakResponse]);
+
   const createSong = useCallback(async (presetId: string): Promise<boolean> => {
     const preset = PRESET_CONCEPTS[presetId];
     if (!preset) return false;
@@ -164,7 +190,7 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
         setVoiceState("thinking");
         const ok = await createSong(id);
         setVoiceState(ok ? "speaking" : "idle");
-        addMessage("hermes", ok
+        hermesRespond( ok
           ? `Creating "${id.replace(/-/g, " ")}". I've dispatched it to the pipeline — ${musicBackend === "suno" ? "Raziel through the Suno gate" : "MiniMax"} will generate the audio.`
           : `I tried but couldn't create that one. Check the pipeline status and try again.`);
         setTimeout(() => setVoiceState("idle"), 2000);
@@ -183,7 +209,7 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
         await new Promise((r) => setTimeout(r, 500));
       }
       setVoiceState("speaking");
-      addMessage("hermes", `I've invoked ${succeeded} of ${presets.length} presets into the pipeline. Check the kanban — they'll arrive as they complete.`);
+      hermesRespond( `I've invoked ${succeeded} of ${presets.length} presets into the pipeline. Check the kanban — they'll arrive as they complete.`);
       setTimeout(() => setVoiceState("idle"), 3000);
       return;
     }
@@ -229,10 +255,10 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
         });
         await sunoPipelineApi.autoRun(issue.id, companyId, { musicBackend });
         setVoiceState("speaking");
-        addMessage("hermes", `"${concept.slice(0, 100)}" is in the pipeline. The archangels are working on it now — check the board for progress.`);
+        hermesRespond( `"${concept.slice(0, 100)}" is in the pipeline. The archangels are working on it now — check the board for progress.`);
       } catch (err) {
         setVoiceState("idle");
-        addMessage("hermes", "Sorry, I couldn't create that one. The gate seemed blocked.");
+        hermesRespond( "Sorry, I couldn't create that one. The gate seemed blocked.");
       }
       setTimeout(() => setVoiceState("idle"), 2000);
       queryClient.invalidateQueries({ queryKey: ["suno-pipeline", companyId] });
@@ -251,10 +277,10 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
       setVoiceState("speaking");
-      addMessage("hermes", data.response || "I'm listening. What do you need?");
+      hermesRespond( data.response || "I'm listening. What do you need?");
     } catch {
       setVoiceState("idle");
-      addMessage("hermes", "The oracle is silent. Try again in a moment.");
+      hermesRespond( "The oracle is silent. Try again in a moment.");
     }
     setTimeout(() => setVoiceState("idle"), 2000);
   }, [input, loading, companyId, musicBackend, addMessage, createSong, queryClient, pushToast, onSongCreated]);
@@ -358,7 +384,7 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
                   setVoiceState("thinking");
                   const ok = await createSong(preset.id);
                   setVoiceState(ok ? "speaking" : "idle");
-                  addMessage("hermes", ok
+                  hermesRespond( ok
                     ? `Dispatching a ${preset.label.toLowerCase()} track through the pipeline.`
                     : `Failed to create ${preset.label}.`);
                   setTimeout(() => setVoiceState("idle"), 2000);
@@ -383,7 +409,7 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
                   await new Promise((r) => setTimeout(r, 500));
                 }
                 setVoiceState("speaking");
-                addMessage("hermes", `All ${succeeded} presets invoked. They'll populate the board as they generate.`);
+                hermesRespond( `All ${succeeded} presets invoked. They'll populate the board as they generate.`);
                 setTimeout(() => setVoiceState("idle"), 3000);
               }}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] border border-amber-700/30 bg-amber-950/30 text-amber-200/70 hover:bg-amber-900/40 hover:text-amber-100 transition-colors whitespace-nowrap"
