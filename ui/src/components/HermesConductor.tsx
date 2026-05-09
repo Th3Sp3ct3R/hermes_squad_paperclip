@@ -188,21 +188,51 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
       return;
     }
 
-    // Detect custom concept
-    const conceptMatch = lower.match(/create\s+(?:a|an|)\s*(.+)/i) || lower.match(/make\s+(?:a|an|)\s*(.+)/i);
-    if (conceptMatch && conceptMatch[1] && conceptMatch[1].length > 3) {
+    // Detect custom concept — broad patterns:
+    //   "i want a hip hop focus song"
+    //   "create a rainy night track"
+    //   "make me something dark"
+    //   "a song about coding at 3am"
+    //   "hip hop coding focus"
+    const conceptMatch =
+      lower.match(/(?:i want|create|make|write|generate)\s+(?:a|an|me|us|)\s*(.+?)(?:song|track|beat|instrumental)?$/i) ||
+      lower.match(/^(.+?)(?:song|track|instrumental|music)(?:\s+for|\s+about)?\s+(.+)/i);
+    // Also treat anything >15 chars that isn't clearly a question/greeting as a concept
+    const isQuestion = /^(?:what|how|who|why|when|where|can|do|did|is|are|will|would|could|should)/i.test(lower);
+    const isGreeting = /^(?:hi|hey|hello|yo|sup|good)/i.test(lower);
+    const shouldCreateSong = conceptMatch || (lower.length > 15 && !isQuestion && !isGreeting);
+    if (shouldCreateSong) {
+      // Build concept from match or use the raw input cleaned up
+      let concept = "";
+      if (conceptMatch && conceptMatch[1]) {
+        concept = (conceptMatch[1] + (conceptMatch[2] ? " " + conceptMatch[2] : "")).trim();
+      } else {
+        // Clean up: remove leading noise like "i want" / "make me" / "a"
+        concept = lower
+          .replace(/^(?:i want|i'd like|make|create|generate|write)\s+(?:a|an|me|us|some|)\s*/i, '')
+          .replace(/\s+(?:song|track|beat|instrumental|music)$/i, '')
+          .trim()
+          .slice(0, 200);
+      }
+      if (!concept || concept.length < 3) concept = lower.slice(0, 200);
+
       setVoiceState("thinking");
       try {
         const issue = await sunoPipelineApi.create(companyId, {
-          concept: conceptMatch[1].trim(),
-          targetChakra: "HEART",
+          concept,
+          targetChakra: lower.includes("focus") || lower.includes("code") || lower.includes("deep") || lower.includes("study") ? "THIRD_EYE" :
+                          lower.includes("sleep") || lower.includes("night") || lower.includes("moon") ? "CROWN" :
+                          lower.includes("dark") || lower.includes("shadow") || lower.includes("gym") || lower.includes("heavy") ? "ROOT" :
+                          lower.includes("hip hop") || lower.includes("rap") || lower.includes("trap") || lower.includes("groove") ? "SACRAL" :
+                          lower.includes("calm") || lower.includes("warm") || lower.includes("sun") || lower.includes("morning") ? "SOLAR" :
+                          "HEART",
         });
         await sunoPipelineApi.autoRun(issue.id, companyId, { musicBackend });
         setVoiceState("speaking");
-        addMessage("hermes", `Done. "${conceptMatch[1].trim().slice(0, 60)}" is in the pipeline now. You'll see it appear on the board shortly.`);
+        addMessage("hermes", `"${concept.slice(0, 100)}" is in the pipeline. The archangels are working on it now — check the board for progress.`);
       } catch (err) {
         setVoiceState("idle");
-        addMessage("hermes", `Sorry, I couldn't create that one. The gate seemed blocked.`);
+        addMessage("hermes", "Sorry, I couldn't create that one. The gate seemed blocked.");
       }
       setTimeout(() => setVoiceState("idle"), 2000);
       queryClient.invalidateQueries({ queryKey: ["suno-pipeline", companyId] });
@@ -256,7 +286,8 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
         <div className="shrink-0">
           <HermesPortraitOrb
             state={voiceState === "speaking" ? "speaking" : voiceState === "thinking" ? "thinking" : "idle"}
-            size={44}
+            size={48}
+            alwaysShowFace
           />
         </div>
 
@@ -385,8 +416,13 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
           </div>
 
           {/* Hint */}
-          <p className="text-[9px] text-muted-foreground/30 text-center">
-            Try: "create a deep coding track" · "invoke the spheres" · "make a night drive song" · or just describe any scene
+          <p className="text-[10px] text-muted-foreground/50 text-center leading-relaxed">
+            <span className="text-cyan-400/60">"deep coding track"</span>
+            {" · "}
+            <span className="text-cyan-400/60">"invoke the spheres"</span>
+            {" · "}
+            <span className="text-cyan-400/60">"night drive song"</span>
+            {" · or describe any scene"}
           </p>
         </div>
       )}

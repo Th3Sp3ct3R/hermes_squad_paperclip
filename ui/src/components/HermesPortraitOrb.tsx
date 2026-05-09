@@ -18,6 +18,8 @@ interface HermesPortraitOrbProps {
   size?: number;
   onClick?: () => void;
   className?: string;
+  /** Always show the face, even at small sizes or idle state */
+  alwaysShowFace?: boolean;
 }
 
 function HermesFace({
@@ -198,8 +200,9 @@ export function HermesPortraitOrb({
   size = 192,
   onClick,
   className,
+  alwaysShowFace = false,
 }: HermesPortraitOrbProps) {
-  const revealFace = size >= 140 && state !== "idle";
+  const revealFace = alwaysShowFace || (size >= 140 && state !== "idle");
   const speaking = state === "speaking";
 
   return (

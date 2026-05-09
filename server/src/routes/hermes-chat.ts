@@ -5,11 +5,11 @@
  * Body: { message: string }
  * Returns: { response: string, model: string }
  *
- * Used by the HermesChat UI when voice isn't active.
- * Calls OpenRouter with Hermes' voice-mode system prompt.
+ * Routes through MiniMax direct (1-2s), falls back to OpenRouter free tier.
  */
 
 import { Router } from "express";
+import { logger } from "../middleware/logger.js";
 
 const HERMES_SYSTEM_PROMPT = `You are Hermes Trismegistus speaking aloud. Keep responses concise and conversational.
 
@@ -36,12 +36,6 @@ hermesChatRouter.post("/api/hermes/chat", async (req, res) => {
     return;
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
-    return;
-  }
-
   conversationHistory.push({ role: "user", content: message.trim() });
 
   // Keep history manageable
@@ -50,37 +44,80 @@ hermesChatRouter.post("/api/hermes/chat", async (req, res) => {
   }
 
   try {
-    const llmRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.OPENROUTER_REFERER ?? "https://paperclip.ing",
-        "X-Title": "Paperclip Hermes Chat",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash-preview",
-        messages: conversationHistory,
-        max_tokens: 300,
-        temperature: 0.7,
-      }),
-    });
+    // Attempt 1: MiniMax direct (fast, ~1-2s)
+    const minimaxKey = process.env.MINIMAX_API_KEY;
+    if (minimaxKey) {
+      try {
+        const mmRes = await fetch("https://api.minimax.io/v1/text/chatcompletion_v2", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${minimaxKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "MiniMax-Text-01",
+            messages: conversationHistory,
+            temperature: 0.7,
+            max_tokens: 300,
+          }),
+        });
 
-    if (!llmRes.ok) {
-      const errText = await llmRes.text().catch(() => `${llmRes.status}`);
-      res.status(502).json({ error: `LLM error: ${errText.slice(0, 200)}` });
-      return;
+        if (mmRes.ok) {
+          const mmData = (await mmRes.json()) as {
+            choices?: Array<{ message?: { content?: string } }>;
+            base_resp?: { status_code: number; status_msg: string };
+          };
+
+          if (mmData.base_resp?.status_code === 0 || !mmData.base_resp) {
+            const text = mmData.choices?.[0]?.message?.content?.trim();
+            if (text) {
+              conversationHistory.push({ role: "assistant", content: text });
+              res.json({ response: text, model: "MiniMax-Text-01" });
+              return;
+            }
+          }
+        }
+      } catch (mmErr) {
+        logger.warn({ err: (mmErr as Error).message }, "[hermes-chat] MiniMax direct failed, falling back");
+      }
     }
 
-    const data = (await llmRes.json()) as {
-      choices: Array<{ message: { content: string } }>;
-      model: string;
-    };
+    // Attempt 2: OpenRouter (paid — funded credits)
+    const orKey = process.env.OPENROUTER_API_KEY;
+    if (orKey) {
+      const model = process.env.HERMES_CHAT_MODEL ?? "google/gemini-2.5-flash";
+      const orRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${orKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.OPENROUTER_REFERER ?? "https://paperclip.ing",
+          "X-Title": "Paperclip Hermes Chat",
+        },
+        body: JSON.stringify({
+          model,
+          messages: conversationHistory,
+          max_tokens: 300,
+          temperature: 0.7,
+        }),
+      });
 
-    const responseText = data.choices[0]?.message?.content ?? "";
-    conversationHistory.push({ role: "assistant", content: responseText });
+      if (orRes.ok) {
+        const orData = (await orRes.json()) as {
+          choices: Array<{ message: { content: string } }>;
+          model: string;
+        };
+        const text = orData.choices?.[0]?.message?.content?.trim();
+        if (text) {
+          conversationHistory.push({ role: "assistant", content: text });
+          res.json({ response: text, model: orData.model });
+          return;
+        }
+      }
+    }
 
-    res.json({ response: responseText, model: data.model });
+    // Neither API worked
+    res.status(502).json({ error: "All LLM providers failed. Check API keys and credits." });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
