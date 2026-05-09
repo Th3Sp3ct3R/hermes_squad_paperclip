@@ -323,13 +323,30 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
         )}
         onClick={() => setMinimized(!minimized)}
       >
-        {/* Hermes portrait orb — small */}
-        <div className="shrink-0">
-          <HermesPortraitOrb
-            state={voiceState === "speaking" ? "speaking" : voiceState === "thinking" ? "thinking" : "idle"}
-            size={48}
-            alwaysShowFace
-          />
+        {/* Hermes character portrait — generated via MiniMax image-01 */}
+        <div className="shrink-0 relative">
+          <div className={cn(
+            "h-12 w-12 rounded-full overflow-hidden ring-2 transition-all duration-700",
+            voiceState === "speaking" ? "ring-cyan-400/60 shadow-lg shadow-cyan-500/20" :
+            voiceState === "thinking" ? "ring-amber-400/50 shadow-lg shadow-amber-500/15" :
+            "ring-white/10"
+          )}>
+            <img
+              src="/hermes-avatar.png"
+              alt="Hermes Trismegistus"
+              className={cn(
+                "h-full w-full object-cover transition-transform duration-700",
+                voiceState === "speaking" && "scale-110",
+                voiceState === "thinking" && "scale-105"
+              )}
+            />
+          </div>
+          {voiceState !== "idle" && (
+            <div className={cn(
+              "absolute -inset-1 rounded-full blur-sm animate-pulse -z-10",
+              voiceState === "speaking" ? "bg-cyan-500/20" : "bg-amber-500/15"
+            )} />
+          )}
         </div>
 
         <div className="flex-1 min-w-0">
