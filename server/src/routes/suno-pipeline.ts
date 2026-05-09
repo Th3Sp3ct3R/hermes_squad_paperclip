@@ -3550,8 +3550,11 @@ export function sunoPipelineRoutes(db: Db) {
         }
       }
 
-      // ── Suno via Raziel CDP browser automation ──
+      // ── Suno first, MiniMax fallback ──
+      // When backend is "suno": try Suno CDP/cookie first. If that fails,
+      // automatically fall back to MiniMax so the song always gets audio.
       if (body.musicBackend === "suno") {
+        let sunoOk = false;
         try {
           const sunoResult = await generateViaSuno(rawSoundPrompt.slice(0, 1000));
           const meta3 = (issue.metadata ?? {}) as Record<string, unknown>;
@@ -3568,8 +3571,52 @@ export function sunoPipelineRoutes(db: Db) {
             .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
             .returning();
           if (sunoUpdated) issue = sunoUpdated;
+          sunoOk = true;
         } catch (err) {
-          logger.warn({ issueId: id, err: err instanceof Error ? err.message : String(err) }, "[auto-run] Suno failed (non-fatal)");
+          logger.warn({ issueId: id, err: err instanceof Error ? err.message : String(err) }, "[auto-run] Suno failed — falling back to MiniMax");
+        }
+
+        // MiniMax fallback when Suno fails and no audio yet
+        if (!sunoOk && !issue.minimaxAudioUrl) {
+          try {
+            const chakraKey = (issue.targetChakra ?? null) as ChakraKey | null;
+            const fbPrompt = buildMiniMaxPrompt(rawSoundPrompt, chakraKey, body.hints as { bpm?: number; identity?: string } | null);
+            const fbResult = await generateMinimaxMusic({
+              model: MINIMAX_MUSIC_MODELS.free,
+              prompt: fbPrompt,
+              lyrics: lyrics || "",
+              outputUrl: true,
+              isInstrumental: true,
+              context: { db, companyId: body.companyId, sunoIssueId: issue.id },
+            });
+            if (fbResult.isUrl) {
+              const fbPersisted = await persistMinimaxAudio({
+                db, companyId: body.companyId, audioUrl: fbResult.audio, traceId: fbResult.traceId,
+                agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null,
+              });
+              const fbSongId = fbResult.traceId ? `minimax:${fbResult.traceId}` : `minimax:${Date.now()}`;
+              const fbMeta = (issue.metadata ?? {}) as Record<string, unknown>;
+              const fbStages = (fbMeta.stages && typeof fbMeta.stages === "object" ? fbMeta.stages : {}) as Record<string, unknown>;
+              const [fbUpdated] = await db
+                .update(sunoIssues)
+                .set({
+                  minimaxAudioUrl: fbPersisted.contentPath,
+                  minimaxSongId: fbSongId,
+                  minimaxStatus: 0,
+                  metadata: appendHistory(
+                    { ...fbMeta, stages: { ...fbStages, minimaxAudioUrl: fbPersisted.contentPath, minimaxSongId: fbSongId }, lastMusicBackend: "minimax-fallback" },
+                    { stage: "minimaxAudioUrl", output: fbPersisted.contentPath, at: new Date().toISOString(), actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, agentName: "MiniMax (Suno fallback)", status: issue.status as SunoStatus },
+                  ),
+                  updatedAt: new Date(),
+                })
+                .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+                .returning();
+              if (fbUpdated) issue = fbUpdated;
+              logger.info({ issueId: id }, "[auto-run] MiniMax fallback succeeded after Suno failure");
+            }
+          } catch (fbErr) {
+            logger.error({ issueId: id, err: fbErr instanceof Error ? fbErr.message : String(fbErr) }, "[auto-run] MiniMax fallback also failed");
+          }
         }
       }
 

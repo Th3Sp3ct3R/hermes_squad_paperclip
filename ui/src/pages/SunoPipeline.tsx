@@ -246,7 +246,8 @@ export function SunoPipeline() {
   const [conceptDraft, setConceptDraft] = useState("");
   const [chakraDraft, setChakraDraft] = useState<SunoChakra>("HEART");
   const [genreDraft, setGenreDraft] = useState("");
-  const [musicBackend, setMusicBackend] = useState<"minimax" | "suno">("minimax");
+  // Suno primary, MiniMax fallback — no toggle needed
+  const musicBackend = "suno" as const;
 
   // ── Angel Invocation Dialog state ──────────────────────────────────────
   const [invocationOpen, setInvocationOpen] = useState(false);
@@ -462,22 +463,6 @@ export function SunoPipeline() {
             - "Invoke the Spheres" batch-creates + auto-runs all mood presets.
             - "Begin Opus" opens the bare single-concept form. */}
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          {/* Music backend selector */}
-          <div className="flex items-center rounded-md border border-border/30 overflow-hidden text-[11px]">
-            <button
-              onClick={() => setMusicBackend("minimax")}
-              className={`px-3 py-1.5 transition-colors ${musicBackend === "minimax" ? "bg-white/10 text-foreground font-medium" : "text-muted-foreground/50 hover:text-muted-foreground"}`}
-            >
-              MiniMax
-            </button>
-            <button
-              onClick={() => setMusicBackend("suno")}
-              className={`px-3 py-1.5 transition-colors border-l border-border/30 ${musicBackend === "suno" ? "bg-white/10 text-foreground font-medium" : "text-muted-foreground/50 hover:text-muted-foreground"}`}
-            >
-              Suno
-            </button>
-          </div>
-
           {/* Task B: Invoke the Spheres — batch create + auto-run all presets */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
