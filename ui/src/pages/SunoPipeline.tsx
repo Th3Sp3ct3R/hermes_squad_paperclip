@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 // ChakraFrequencyMap and BatchProgressPanel removed — MiniMax-only pipeline
 import { ArchangelAvatar, ArchangelAvatarStack } from "@/components/ArchangelAvatar";
+import { HermesConductor } from "@/components/HermesConductor";
 import { ChakraYantra, type ArchangelName, type ChakraKey } from "@/components/SacredGeometry";
 import { useAudioAmplitude } from "@/lib/useAudioAmplitude";
 import { cn } from "@/lib/utils";
@@ -682,9 +683,10 @@ export function SunoPipeline() {
           {processingJobs.filter(j => !j.finishedAt).map(job => {
             const stages = ["assign","dispatch","soundPrompt","lyrics","visualPrompt","music","coverArt","releaseCopy","review"];
             const currentIdx = stages.indexOf(job.currentStage);
+            const backendLabel = job.musicBackend === "suno" ? "Suno (Audio)" : "MiniMax (Audio)";
             const stageLabels: Record<string, string> = {
               assign: "Assigning", dispatch: "Dispatching", soundPrompt: "Uriel (Sound)",
-              lyrics: "Zadkiel (Lyrics)", visualPrompt: "Jophiel (Visual)", music: "MiniMax (Audio)",
+              lyrics: "Zadkiel (Lyrics)", visualPrompt: "Jophiel (Visual)", music: backendLabel,
               coverArt: "Jophiel (Cover)", releaseCopy: "Gabriel (Copy)", review: "Review",
             };
             return (
@@ -725,6 +727,15 @@ export function SunoPipeline() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Hermes Conductor — avatar above the archangels, chat to control pipeline */}
+      {selectedCompanyId && (
+        <HermesConductor
+          companyId={selectedCompanyId}
+          musicBackend={musicBackend}
+          onSongCreated={() => queryClient.invalidateQueries({ queryKey: sunoQueryKey(selectedCompanyId) })}
+        />
       )}
 
       {/* Archangel Agent Bar — shows the pipeline agents in order */}
@@ -1055,6 +1066,10 @@ function SunoCard({ issue, agentNameById, onChangeStatus, onDelete }: SunoCardPr
         ];
         // Audio is done if either suno (audioUrl) or minimax (minimaxAudioUrl) has it
         const hasAudio = !!stages.audioUrl || !!stages.minimaxAudioUrl;
+        // Use lastMusicBackend from metadata for label, or check which URL exists
+        const backendMeta = (meta.lastMusicBackend as string) || "minimax";
+        const agentLabel = backendMeta === "suno" ? "Suno" : "MiniMax";
+        pipeline[3] = { key: "audioUrl", label: "Audio", agent: agentLabel };
         const doneCount = pipeline.filter(s => {
           if (s.key === "audioUrl") return hasAudio;
           return !!stages[s.key];
@@ -1363,7 +1378,8 @@ function AudioVariantRow({
         src={src}
         controls
         preload="none"
-        className="h-6 flex-1 min-w-0"
+        crossOrigin="anonymous"
+        className="h-10 flex-1 min-w-0"
         style={{ colorScheme: "dark" }}
       />
     </div>
