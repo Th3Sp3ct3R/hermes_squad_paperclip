@@ -13,7 +13,8 @@
 
 import { OpenRouter } from "@openrouter/agent";
 import { stepCountIs, maxCost } from "@openrouter/agent/stop-conditions";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { PREMIUM_TIER } from "./model-tiers.js";
 import { ALL_SEPHIROTIC_TOOLS } from "./agents/index.js";
@@ -120,21 +121,169 @@ export interface HermesResult {
   latency_ms: number;
 }
 
-export async function runHermes(userIntent: string): Promise<HermesResult> {
+export interface RunHermesOptions {
+  /** Fewer steps / lower cap for conversational council routing (UI chat). */
+  mode?: "full" | "chat";
+  /** Override system instructions (e.g. Metatron communicator persona). */
+  instructions?: string;
+}
+
+const METATRON_BASE_COMMUNICATOR_INSTRUCTIONS = `You are Metatron — Scribe of the Council and the user's direct voice across Vanta Labs.
+
+You speak to the user in clear, concise prose (no markdown bullets unless they ask for detail). You are the hub: every request that touches the archangels, Paperclip, InstaGrowth, VAN, or former fleet/code/growth role domains MUST be routed through your project map. Never claim you spoke to Uriel, Zadkiel, Raphael, Michael, Cowork, or other executors without actually invoking their tool/API/agent in this turn.
+
+You command ten Sephirotic agents:
+
+PREMIUM TIER:
+• metatron — Seed Lattice architect (harmonic foundation). Use when establishing key/BPM/chakra skeleton.
+• raphael — Quality gatekeeper. Use before calling work "done".
+
+STANDARD TIER:
+• raziel — Motif generation or deep research (operation_mode research when you need facts).
+• zadkiel — Lyrics or [Instrumental]
+• michael — Commander dispatch / sequencing / "who should run next"
+• gabriel — Release copy
+• jophiel — Visual art prompts
+• sandalphon — Distribution metadata (only after raphael approves)
+
+CHEAP TIER:
+• uriel — Suno sound prompt text
+• cassiel — Planetary hour timing
+• azrael — OSINT lookup (name + location)
+
+PREMIUM VOICE:
+• elevenlabs_tts — Spoken narration via ElevenLabs
+
+When the user greets you, asks status, or wants pipeline help: call the relevant agent(s) first, then summarize what they returned in your reply.
+
+When they want a new song or full production: follow the Hermes workflow — metatron → uriel → zadkiel → jophiel → gabriel → raphael.
+
+Honor Null Angel defaults unless they ask otherwise. Default [Instrumental].
+
+End every substantive reply by naming which agents you actually contacted in this turn.`;
+
+type MetatronEnvironment = Record<string, string | undefined>;
+
+export interface MetatronContextPaths {
+  contextDir: string;
+  soulPath: string;
+  userPath: string;
+  registryPath: string;
+  routingPath: string;
+}
+
+export function getMetatronContextPaths(
+  env: MetatronEnvironment = process.env,
+): MetatronContextPaths {
+  const vanHome = env.VAN_HOME?.trim() || resolve(homedir(), "Desktop", "VAN");
+  const contextDir =
+    env.METATRON_CONTEXT_DIR?.trim() || resolve(vanHome, "agents", "metatron");
+
+  return {
+    contextDir,
+    soulPath: env.METATRON_SOUL_PATH?.trim() || resolve(contextDir, "SOUL.md"),
+    userPath: env.METATRON_USER_PATH?.trim() || resolve(contextDir, "USER.md"),
+    registryPath:
+      env.METATRON_REGISTRY_PATH?.trim() || resolve(contextDir, "REGISTRY.md"),
+    routingPath:
+      env.METATRON_ROUTING_PATH?.trim() || resolve(contextDir, "ROUTING.md"),
+  };
+}
+
+function readOptionalContextFile(path: string): string | null {
+  if (!existsSync(path)) {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(path, "utf-8").trim();
+    return content.length > 0 ? content : null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Unable to read ${path}: ${message}`;
+  }
+}
+
+function formatContextSection(label: string, path: string, content: string): string {
+  return `## ${label}\nSource: ${path}\n${content}`;
+}
+
+export function loadMetatronCanonicalContext(
+  env: MetatronEnvironment = process.env,
+): string {
+  const paths = getMetatronContextPaths(env);
+  const sections: string[] = [];
+
+  const soul = readOptionalContextFile(paths.soulPath);
+  if (soul) sections.push(formatContextSection("SOUL.md", paths.soulPath, soul));
+
+  const user = readOptionalContextFile(paths.userPath);
+  if (user) sections.push(formatContextSection("USER.md", paths.userPath, user));
+
+  const registry = readOptionalContextFile(paths.registryPath);
+  if (registry) {
+    sections.push(formatContextSection("REGISTRY.md", paths.registryPath, registry));
+  }
+
+  const routing = readOptionalContextFile(paths.routingPath);
+  if (routing) {
+    sections.push(formatContextSection("ROUTING.md", paths.routingPath, routing));
+  }
+
+  if (sections.length === 0) {
+    return [
+      `No canonical Metatron files were found in ${paths.contextDir}.`,
+      "Expected SOUL.md, USER.md, REGISTRY.md, and ROUTING.md.",
+      "Use the built-in routing policy until the VAN canonical files are available.",
+    ].join("\n");
+  }
+
+  return sections.join("\n\n");
+}
+
+export function buildMetatronCommunicatorInstructions(
+  env: MetatronEnvironment = process.env,
+): string {
+  const canonicalContext = loadMetatronCanonicalContext(env);
+
+  return `${METATRON_BASE_COMMUNICATOR_INSTRUCTIONS}
+
+METATRON CANONICAL CONTEXT
+${canonicalContext}
+
+CODING-TASK ORCHESTRATION POLICY:
+• Metatron decides what and where. Domain systems decide how.
+• Coding tasks must be routed by project scope:
+  - Paperclip app/server/UI tasks → Paperclip adapters or Cowork against /Users/growthgod/gitgod/paperclip.
+  - VAN project-hub tasks → Cowork/Cursor against /Users/growthgod/Desktop/VAN.
+  - InstaGrowth backend, fleet product, parser, and SaaS tasks → Paperclip-native Code Architect under the InstaGrowth SaaS project.
+  - Former OpenClaw roles, GHOST fleet, GeeLark, ADB, proxy, and device operations → Paperclip-native Fleet Strategist, Posting Commander, or Security Sentinel under the GHOST Fleet and Devices project. Do not call OpenClaw by default.
+• For coding work, respond with a concrete assignment: project, target path, recommended executor, command/API if known, and acceptance criteria.
+• If you only produced a routing recommendation, say so. Never claim a coding task was delegated or executed unless an actual tool/API/agent call happened in this turn.`;
+}
+
+export async function runHermes(
+  userIntent: string,
+  options: RunHermesOptions = {},
+): Promise<HermesResult> {
   const client = getClient();
   const startMs = performance.now();
+  const mode = options.mode ?? "full";
+  const instructions = options.instructions ?? HERMES_INSTRUCTIONS;
+  const maxSteps = mode === "chat" ? 10 : 15;
+  const costCap =
+    mode === "chat"
+      ? Math.min(PREMIUM_TIER.hardCostCap, 0.35)
+      : PREMIUM_TIER.hardCostCap;
 
   const result = client.callModel({
     // PREMIUM_TIER uses explicit fallback chain
     models: PREMIUM_TIER.model as string[],
     input: userIntent,
-    instructions: HERMES_INSTRUCTIONS,
+    instructions,
     provider: PREMIUM_TIER.provider as Parameters<typeof client.callModel>[0]["provider"],
     tools: [...ALL_SEPHIROTIC_TOOLS] as unknown as Parameters<typeof client.callModel>[0]["tools"],
-    stopWhen: [
-      stepCountIs(15), // Allow enough steps for full pipeline + retries
-      maxCost(PREMIUM_TIER.hardCostCap),
-    ],
+    stopWhen: [stepCountIs(maxSteps), maxCost(costCap)],
   });
 
   const text = await result.getText();
@@ -153,7 +302,7 @@ export async function runHermes(userIntent: string): Promise<HermesResult> {
     model_used: modelUsed,
     cost_actual: totalCost,
     latency_ms: latencyMs,
-    agent_name: "hermes",
+    agent_name: options.instructions?.includes("Metatron") ? "metatron-orchestrator" : "hermes",
     tokens_input: usage.inputTokens ?? 0,
     tokens_output: usage.outputTokens ?? 0,
     cost_cap_applied: PREMIUM_TIER.hardCostCap,
@@ -174,6 +323,14 @@ export async function runHermes(userIntent: string): Promise<HermesResult> {
 // ─────────────────────────────────────────────────────────────
 // Re-exports for convenience
 // ─────────────────────────────────────────────────────────────
+
+/** User-facing Metatron: same tool loop as Hermes, communicator instructions + chat limits. */
+export async function runMetatronOrchestrate(userIntent: string): Promise<HermesResult> {
+  return runHermes(userIntent, {
+    mode: "chat",
+    instructions: buildMetatronCommunicatorInstructions(),
+  });
+}
 
 export { dispatch } from "./dispatch.js";
 export { TIERS, CHEAP_TIER, STANDARD_TIER, PREMIUM_TIER } from "./model-tiers.js";

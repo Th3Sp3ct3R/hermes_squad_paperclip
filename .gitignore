@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Prebuilt SPA served from server/static path (run `pnpm prepare:ui-dist` locally)
+server/ui-dist/
 .env
 *.tsbuildinfo
 drizzle/meta/

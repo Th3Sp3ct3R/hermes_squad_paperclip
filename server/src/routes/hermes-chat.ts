@@ -9,7 +9,13 @@
  */
 
 import { Router } from "express";
+import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { runMetatronOrchestrate } from "../hermes/index.js";
+import {
+  createMetatronCodingTask,
+  ensureMetatronHub,
+} from "../services/metatron-hub.js";
 
 const HERMES_SYSTEM_PROMPT = `You are Hermes Trismegistus speaking aloud. Keep responses concise and conversational.
 
@@ -26,9 +32,129 @@ const conversationHistory: Array<{ role: string; content: string }> = [
   { role: "system", content: HERMES_SYSTEM_PROMPT },
 ];
 
-export const hermesChatRouter = Router();
+const SAFE_COMPANY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-hermesChatRouter.post("/api/hermes/chat", async (req, res) => {
+export type MetatronDirectAction =
+  | { type: "bootstrap_hub" }
+  | { type: "create_coding_task"; message: string };
+
+export function formatMetatronIntent(message: string, companyId?: string): string {
+  const trimmedMessage = message.trim();
+  const trimmedCompanyId = companyId?.trim();
+
+  if (!trimmedCompanyId || !SAFE_COMPANY_ID_PATTERN.test(trimmedCompanyId)) {
+    return trimmedMessage;
+  }
+
+  return `[companyId=${trimmedCompanyId}]\n${trimmedMessage}`;
+}
+
+export function detectMetatronDirectAction(message: string): MetatronDirectAction | null {
+  const trimmed = message.trim();
+  const normalized = trimmed.toLowerCase();
+
+  if (
+    /\b(bootstrap|initialize|init|seed|setup)\b/.test(normalized) &&
+    /\b(the|metatron|hub|command)\b/.test(normalized)
+  ) {
+    return { type: "bootstrap_hub" };
+  }
+
+  const taskMatch = trimmed.match(
+    /(?:metatron[,:\s]+)?(?:create|make|open|add)\s+(?:a\s+)?(?:coding\s+)?(?:task|issue)\s+(?:to|for|that)\s+(.+)/i,
+  );
+  if (taskMatch?.[1]?.trim()) {
+    return { type: "create_coding_task", message: taskMatch[1].trim() };
+  }
+
+  return null;
+}
+
+async function handleCouncilOrchestrate(
+  db: Db,
+  req: import("express").Request,
+  res: import("express").Response,
+): Promise<void> {
+  const { message, companyId } = req.body as { message?: string; companyId?: string };
+
+  if (!message || typeof message !== "string" || !message.trim()) {
+    res.status(400).json({ error: "message is required" });
+    return;
+  }
+
+  const directAction = detectMetatronDirectAction(message);
+  if (directAction?.type === "bootstrap_hub") {
+    const result = await ensureMetatronHub(db);
+    const created =
+      result.company.created ||
+      result.projects.some((project) => project.created) ||
+      result.agents.some((agent) => agent.created);
+    res.json({
+      response: created
+        ? "THE hub is initialized. Metatron seeded the Paperclip-native projects and former-role agents."
+        : "THE hub is already initialized. Metatron found the existing projects and agents.",
+      model: "deterministic/metatron-hub",
+      orchestrated: true,
+      action: "bootstrap_hub",
+      hub: result,
+      total_cost: 0,
+      total_steps: 0,
+      latency_ms: 0,
+    });
+    return;
+  }
+
+  if (directAction?.type === "create_coding_task") {
+    const result = await createMetatronCodingTask(db, {
+      message: directAction.message,
+      requestedBy: "metatron-orchestrate",
+    });
+    res.json({
+      response: `Created ${result.issue.identifier ?? result.issue.id} in ${result.project.name}, assigned to ${result.assignee.name}.`,
+      model: "deterministic/metatron-hub",
+      orchestrated: true,
+      action: "create_coding_task",
+      codingTask: result,
+      total_cost: 0,
+      total_steps: 0,
+      latency_ms: 0,
+    });
+    return;
+  }
+
+  if (!process.env.OPENROUTER_API_KEY) {
+    res.status(503).json({
+      error: "OPENROUTER_API_KEY required for council orchestration. Set it in server env.",
+    });
+    return;
+  }
+
+  const intent = formatMetatronIntent(message, companyId);
+
+  try {
+    const result = await runMetatronOrchestrate(intent);
+    res.json({
+      response: result.text,
+      model: result.model_used,
+      orchestrated: true,
+      total_cost: result.total_cost,
+      total_steps: result.total_steps,
+      latency_ms: result.latency_ms,
+    });
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, "[metatron-orchestrate] failed");
+    res.status(500).json({ error: (err as Error).message });
+  }
+}
+
+export function hermesChatRouter(db: Db) {
+  const router = Router();
+
+  /** Metatron council orchestration — deterministic hub actions first, OpenRouter agent loop otherwise. */
+  router.post("/api/metatron/orchestrate", (req, res) => void handleCouncilOrchestrate(db, req, res));
+  router.post("/api/hermes/orchestrate", (req, res) => void handleCouncilOrchestrate(db, req, res));
+
+  router.post("/api/hermes/chat", async (req, res) => {
   const { message } = req.body as { message?: string };
 
   if (!message || typeof message !== "string" || !message.trim()) {
@@ -121,4 +247,7 @@ hermesChatRouter.post("/api/hermes/chat", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
-});
+  });
+
+  return router;
+}

@@ -25,6 +25,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { sunoPipelineRoutes } from "./routes/suno-pipeline.js";
+import { metatronRoutes } from "./routes/metatron.js";
 import { hermesChatRouter } from "./routes/hermes-chat.js";
 import { usageStatsRoutes } from "./routes/usage-stats.js";
 import { llmRoutes } from "./routes/llms.js";
@@ -155,6 +156,7 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(sunoPipelineRoutes(db));
+  api.use(metatronRoutes(db));
   api.use(usageStatsRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
@@ -228,7 +230,7 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
-  app.use(hermesChatRouter);
+  app.use(hermesChatRouter(db));
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
@@ -246,8 +248,14 @@ export async function createApp(
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
       const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
-      app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
+      app.use(express.static(uiDist, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith(".wasm")) res.setHeader("Content-Type", "application/wasm");
+          if (filePath.endsWith(".onnx")) res.setHeader("Content-Type", "application/octet-stream");
+        },
+      }));
+      // SPA fallback — only for non-asset routes (don't intercept .wasm, .js, .css, etc.)
+      app.get(/^\/(?!.*\.\w+$).*/, (_req, res) => {
         res.status(200).set("Content-Type", "text/html").end(indexHtml);
       });
     } else {

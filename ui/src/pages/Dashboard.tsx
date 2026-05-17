@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { metatronApi, type MetatronCodingTaskResult } from "../api/metatron";
 import { heartbeatsApi } from "../api/heartbeats";
 import { usageStatsApi } from "../api/usageStats";
 import { costsApi } from "../api/costs";
@@ -364,6 +365,118 @@ function EphemerisChart({ byDay }: { byDay: { date: string; tokens: number; call
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
+function MetatronHubPanel({ selectedCompanyId }: { selectedCompanyId: string }) {
+  const queryClient = useQueryClient();
+  const [taskMessage, setTaskMessage] = useState("Fix the Paperclip dev server exit 137 problem and verify THE hub stays alive.");
+  const [lastTask, setLastTask] = useState<MetatronCodingTaskResult | null>(null);
+
+  const refreshHubQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.activity(selectedCompanyId) }),
+    ]);
+  };
+
+  const bootstrapMutation = useMutation({
+    mutationFn: () => metatronApi.bootstrapThe(),
+    onSuccess: refreshHubQueries,
+  });
+
+  const createTaskMutation = useMutation({
+    mutationFn: () => metatronApi.createCodingTask({
+      message: taskMessage,
+      requestedBy: "dashboard-metatron-hub",
+    }),
+    onSuccess: async (result) => {
+      setLastTask(result);
+      await refreshHubQueries();
+    },
+  });
+
+  const error = bootstrapMutation.error ?? createTaskMutation.error;
+  const isBusy = bootstrapMutation.isPending || createTaskMutation.isPending;
+
+  return (
+    <section className="rounded border border-violet-400/30 bg-violet-950/20 p-5 shadow-[0_0_40px_rgba(139,92,246,0.08)]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-2">
+          <p className="seclabel b"><CaduceusMark /> Metatron Hub</p>
+          <h2 className="text-xl font-semibold tracking-tight text-foreground">
+            THE command company
+          </h2>
+          <p className="max-w-3xl text-sm text-muted-foreground">
+            Initialize the Paperclip-native hub, seed former OpenClaw roles as native agents,
+            and create routed coding issues without depending on the OpenClaw runtime.
+          </p>
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full border border-border/40 px-2 py-1">Metatron routes</span>
+            <span className="rounded-full border border-border/40 px-2 py-1">Paperclip creates issues</span>
+            <span className="rounded-full border border-border/40 px-2 py-1">No OpenClaw runtime</span>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={isBusy}
+            onClick={() => bootstrapMutation.mutate()}
+            className="rounded-md border border-violet-300/40 px-3 py-2 text-sm font-medium text-violet-100 transition hover:bg-violet-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {bootstrapMutation.isPending ? "Initializing..." : "Initialize THE Hub"}
+          </button>
+          <Link
+            to="/agents"
+            className="rounded-md border border-border/40 px-3 py-2 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            View Agents
+          </Link>
+          <Link
+            to="/issues"
+            className="rounded-md border border-border/40 px-3 py-2 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            View Issues
+          </Link>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto]">
+        <textarea
+          value={taskMessage}
+          onChange={(event) => setTaskMessage(event.target.value)}
+          rows={3}
+          className="min-h-[88px] rounded-md border border-border/40 bg-background/60 px-3 py-2 text-sm outline-none transition focus:border-violet-300/70"
+          placeholder="Tell Metatron what coding task to create..."
+        />
+        <button
+          type="button"
+          disabled={isBusy || taskMessage.trim().length === 0}
+          onClick={() => createTaskMutation.mutate()}
+          className="rounded-md bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-50 lg:self-end"
+        >
+          {createTaskMutation.isPending ? "Creating..." : "Create Routed Task"}
+        </button>
+      </div>
+
+      {lastTask && (
+        <div className="mt-3 rounded-md border border-emerald-400/30 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+          Created{" "}
+          <Link to={`/issues/${lastTask.issue.identifier ?? lastTask.issue.id}`} className="font-semibold underline underline-offset-2">
+            {lastTask.issue.identifier ?? lastTask.issue.id}
+          </Link>{" "}
+          in {lastTask.project.name}, assigned to {lastTask.assignee.name}.
+        </div>
+      )}
+
+      {error instanceof Error && (
+        <p className="mt-3 text-sm text-destructive">{error.message}</p>
+      )}
+    </section>
+  );
+}
+
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialog();
@@ -590,6 +703,8 @@ export function Dashboard() {
           </button>
         </div>
       )}
+
+      <MetatronHubPanel selectedCompanyId={selectedCompanyId} />
 
       {data && (
         <>

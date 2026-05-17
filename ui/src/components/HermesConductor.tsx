@@ -98,7 +98,7 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
     {
       id: "welcome",
       role: "hermes",
-      text: "I'm Hermes. Tell me what music to create — a mood, a scene, a vibe. I'll handle the rest.",
+      text: "Metatron speaking for the council. Ask for a song, pipeline status, or any archangel — I'll route through Uriel, Zadkiel, Raphael, and the rest.",
       timestamp: new Date(),
     },
   ]);
@@ -281,21 +281,44 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
       return;
     }
 
-    // Fall back to Hermes chat API for conversation
+    // Council orchestration via Metatron (real Sephirotic tool loop — not plain LLM chat)
     setVoiceState("thinking");
     try {
-      const res = await fetch("/api/hermes/chat", {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 120_000);
+      const res = await fetch("/api/metatron/orchestrate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, companyId }),
+        signal: controller.signal,
       });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const data = await res.json();
+      window.clearTimeout(timeout);
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error ?? `${res.status}`);
+      }
+      const data = (await res.json()) as {
+        response?: string;
+        total_steps?: number;
+        latency_ms?: number;
+      };
       setVoiceState("speaking");
-      hermesRespond( data.response || "I'm listening. What do you need?");
-    } catch {
+      const body = data.response?.trim() || "The council is listening. What do you need?";
+      const meta =
+        data.total_steps && data.total_steps > 1
+          ? `\n\n— ${data.total_steps} council steps`
+          : "";
+      hermesRespond(body + meta);
+    } catch (err) {
       setVoiceState("idle");
-      hermesRespond( "The oracle is silent. Try again in a moment.");
+      const msg = err instanceof Error ? err.message : "";
+      if (msg.includes("abort")) {
+        hermesRespond("The council session timed out. Try a shorter request or check OPENROUTER_API_KEY.");
+      } else if (msg.includes("OPENROUTER")) {
+        hermesRespond("Metatron cannot reach the council without OPENROUTER_API_KEY on the server.");
+      } else {
+        hermesRespond(msg ? `Council blocked: ${msg}` : "The oracle is silent. Try again in a moment.");
+      }
     }
     setTimeout(() => setVoiceState("idle"), 2000);
   }, [input, loading, companyId, musicBackend, addMessage, createSong, queryClient, pushToast, onSongCreated]);
@@ -357,7 +380,10 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
               textShadow: "0 0 6px rgba(255,255,255,0.3)",
             }}
           >
-            Hermes
+            Metatron
+            <span className="text-[10px] font-normal text-muted-foreground block leading-tight">
+              voice of the council
+            </span>
           </div>
           <div className="text-[10px] text-muted-foreground/60">
             {voiceState === "thinking" ? "Thinking..." : voiceState === "speaking" ? "Speaking" : "Trickster-Sage Conductor"}
@@ -460,7 +486,7 @@ export function HermesConductor({ companyId, musicBackend, onSongCreated, onClos
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Tell Hermes what music to make..."
+              placeholder="Ask Metatron — songs, status, or the archangels..."
               disabled={loading}
               className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[12px] text-white/80 placeholder:text-muted-foreground/40 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 transition-all"
             />

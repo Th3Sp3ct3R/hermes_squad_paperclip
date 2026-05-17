@@ -143,6 +143,10 @@ export function HermesChat() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
+  // Dedup: prevent duplicate transcriptions/responses within a time window
+  const lastTranscriptRef = useRef<{ text: string; ts: number }>({ text: "", ts: 0 });
+  const lastResponseIdRef = useRef<string>("");
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Hermes" }]);
   }, [setBreadcrumbs]);
@@ -223,10 +227,18 @@ export function HermesChat() {
 
       case "transcription":
         if (msg.text) {
+          // Dedup: skip if same text within 2 seconds
+          const now = Date.now();
+          const last = lastTranscriptRef.current;
+          if (msg.text === last.text && now - last.ts < 2000) {
+            break;
+          }
+          lastTranscriptRef.current = { text: msg.text, ts: now };
+
           setMessages((prev) => [
             ...prev,
             {
-              id: `user-${Date.now()}`,
+              id: `user-${now}`,
               role: "user",
               text: msg.text!,
               timestamp: new Date(),
@@ -252,6 +264,14 @@ export function HermesChat() {
 
       case "audio_end":
         if (msg.fullText) {
+          // Dedup: skip if same response text within 3 seconds
+          const responseKey = msg.fullText.slice(0, 100);
+          if (responseKey === lastResponseIdRef.current) {
+            break;
+          }
+          lastResponseIdRef.current = responseKey;
+          setTimeout(() => { lastResponseIdRef.current = ""; }, 3000);
+
           setMessages((prev) => [
             ...prev,
             {
@@ -369,6 +389,11 @@ export function HermesChat() {
         },
         onSpeechEnd: (audio: Float32Array) => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
+            // Throttle: ignore speech segments less than 500ms apart
+            const now = Date.now();
+            if (now - lastTranscriptRef.current.ts < 500) return;
+            lastTranscriptRef.current = { text: "", ts: now };
+
             const wavBuffer = encodeWAV(audio, 16000);
             const base64 = arrayBufferToBase64(wavBuffer);
             wsRef.current.send(JSON.stringify({ type: "audio", data: base64 }));

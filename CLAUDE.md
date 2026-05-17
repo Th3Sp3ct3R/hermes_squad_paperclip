@@ -6,7 +6,22 @@
 
 Default dev port: **3100** (Vite proxies `/api/*` to the backend).
 
+**Stable local run (recommended on Mac):** `pnpm dev:static` serves a prebuilt UI from `server/ui-dist` and does **not** embed Vite in the server process (avoids `exit 137` OOM from `PAPERCLIP_UI_DEV_MIDDLEWARE`). Requires external Postgres in `~/.paperclip/instances/default/.env` (`DATABASE_URL`, `SERVE_UI=true`). First run builds UI if `server/ui-dist` is missing; rebuild after UI changes with `pnpm prepare:ui-dist`.
+
 ---
+
+## Metatron Front Door
+
+Metatron is the user-facing cross-project orchestrator for Vanta Labs. In Paperclip, the canonical HTTP entry point is:
+
+- `POST /api/metatron/orchestrate`
+- Alias: `POST /api/hermes/orchestrate`
+- Implementation: `server/src/hermes/index.ts`
+- Canonical context: `~/Desktop/VAN/agents/metatron/`
+
+Paperclip loads Metatron's VAN context (`SOUL.md`, `USER.md`, `REGISTRY.md`, `ROUTING.md`) into the Metatron communicator prompt when available. This makes Paperclip the current command surface for routing coding tasks across Paperclip, VAN, InstaGrowth, and OpenClaw.
+
+Metatron decides what and where. Domain systems decide how.
 
 ## The Suno Pipeline
 
@@ -26,7 +41,7 @@ The primary active feature. An autonomous music production pipeline with a full 
 **Archangel agents and their roles:**
 | Agent | Role |
 |-------|------|
-| Michael | Commander — assigns agents, dispatches issues |
+| Michael | Suno domain commander — assigns agents, dispatches issues inside the music pipeline |
 | Uriel | Sound Prompt Engineer — writes Suno description text |
 | Zadkiel | Lyricist — chakra-resonant lyrics or `[Instrumental]` |
 | Jophiel | Visual Art — cover art prompt, calls image-gen |
@@ -34,7 +49,7 @@ The primary active feature. An autonomous music production pipeline with a full 
 | Raphael | Reviewer / Gatekeeper — approves or rejects |
 | Gabriel | Release Copy — caption, hashtags, release notes (JSON) |
 | Sandalphon | Publisher — ships to DistroKid |
-| Metatron | Activity log / timeline reader |
+| Metatron | Cross-project orchestrator / user voice — routes intent, reads VAN registry, delegates Suno production to Michael |
 
 **LLM:** `minimax/minimax-m2.5:free` via OpenRouter. Env: `OPENROUTER_API_KEY`.
 

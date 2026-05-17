@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { stdin, stdout } from "node:process";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
@@ -12,9 +17,16 @@ const tailscaleAuthFlagNames = new Set([
 ]);
 
 let tailscaleAuth = false;
+let staticUi =
+  process.env.PAPERCLIP_STATIC_UI === "true" ||
+  cliArgs.includes("--static-ui");
 const forwardedArgs = [];
 
 for (const arg of cliArgs) {
+  if (arg === "--static-ui") {
+    staticUi = true;
+    continue;
+  }
   if (tailscaleAuthFlagNames.has(arg)) {
     tailscaleAuth = true;
     continue;
@@ -31,11 +43,13 @@ if (process.env.npm_config_authenticated_private === "true") {
 
 const env = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  PAPERCLIP_UI_DEV_MIDDLEWARE: staticUi ? "false" : "true",
 };
 
-if (mode === "watch") {
+if (mode === "watch" || staticUi) {
   env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
+}
+if (mode === "watch") {
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
@@ -47,6 +61,12 @@ if (tailscaleAuth) {
   console.log("[paperclip] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
 } else {
   console.log("[paperclip] dev mode: local_trusted (default)");
+}
+
+if (staticUi) {
+  console.log(
+    "[paperclip] UI: static (server/ui-dist) — avoids Vite middleware OOM on macOS",
+  );
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
@@ -197,6 +217,32 @@ async function maybePreflightMigrations() {
 }
 
 await maybePreflightMigrations();
+
+async function ensureStaticUiDist() {
+  const indexPath = path.join(repoRoot, "server", "ui-dist", "index.html");
+  if (existsSync(indexPath)) return;
+
+  console.log("[paperclip] server/ui-dist missing — building UI once...");
+  const prepare = spawn("bash", ["scripts/prepare-server-ui-dist.sh"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env,
+  });
+  const exit = await new Promise((resolve) => {
+    prepare.on("exit", (code, signal) => resolve({ code: code ?? 0, signal }));
+  });
+  if (exit.signal) {
+    process.kill(process.pid, exit.signal);
+    return;
+  }
+  if (exit.code !== 0) {
+    process.exit(exit.code);
+  }
+}
+
+if (staticUi) {
+  await ensureStaticUiDist();
+}
 
 async function buildPluginSdk() {
   console.log("[paperclip] building plugin sdk...");
