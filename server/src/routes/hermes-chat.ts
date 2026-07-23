@@ -36,7 +36,8 @@ const SAFE_COMPANY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type MetatronDirectAction =
   | { type: "bootstrap_hub" }
-  | { type: "create_coding_task"; message: string };
+  | { type: "create_coding_task"; message: string }
+  | { type: "create_suno_pipeline"; concept: string; targetChakra?: string };
 
 export function formatMetatronIntent(message: string, companyId?: string): string {
   const trimmedMessage = message.trim();
@@ -65,6 +66,13 @@ export function detectMetatronDirectAction(message: string): MetatronDirectActio
   );
   if (taskMatch?.[1]?.trim()) {
     return { type: "create_coding_task", message: taskMatch[1].trim() };
+
+  const sunoMatch = trimmed.match(
+    /(?:metatron[,:\s]+)?(?:create|make|generate|compose|run)\s+(?:a\s+)?suno\s+(?:song|track|music|pipeline|issue)\s*(?:about|for|on|with|chakra)?\s*(.+)/i,
+  );
+  if (sunoMatch?.[1]?.trim()) {
+    return { type: "create_suno_pipeline", concept: sunoMatch[1].trim() };
+  }
   }
 
   return null;

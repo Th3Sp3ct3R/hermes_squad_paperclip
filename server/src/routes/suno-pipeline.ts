@@ -60,6 +60,7 @@ import {
   type MinimaxMusicModel,
 } from "../services/minimax-music.js";
 import { generateViaSuno } from "../services/suno-browser-agent.js";
+import { generateArchitectPrompt } from "../services/architect-prompt-generator.js";
 import { createJob, advanceJob, completeJob, failJob, getJobs } from "../services/pipeline-jobs.js";
 import {
   parseBatchRequest,
@@ -2643,6 +2644,24 @@ export function sunoPipelineRoutes(db: Db) {
     const stages = (meta.stages && typeof meta.stages === "object"
       ? (meta.stages as Record<string, unknown>)
       : {}) as Record<string, unknown>;
+    let architectData: SunoLlmContext["architectData"] | undefined;
+    if (typeof stages.architectContract === "string") {
+      try {
+        const ac = JSON.parse(stages.architectContract) as Record<string, unknown>;
+        const stack = (ac.stack && typeof ac.stack === "object" ? ac.stack : {}) as Record<string, unknown>;
+        const suno = (ac.suno && typeof ac.suno === "object" ? ac.suno : {}) as Record<string, unknown>;
+        architectData = {
+          brainwave: `${typeof stack.brainwave_band === "string" ? stack.brainwave_band : ""}${typeof stack.brainwave_hz === "number" ? ` ${stack.brainwave_hz}Hz` : ""}`.trim(),
+          bpm: typeof stack.bpm === "number" ? stack.bpm : 0,
+          label: typeof ac.label === "string" ? ac.label : "",
+          useCase: typeof ac.use_case === "string" ? ac.use_case : "",
+          arc: typeof ac.arc === "string" ? ac.arc : "",
+          styles: typeof suno.styles === "string" ? suno.styles : "",
+        };
+      } catch {
+        /* malformed contract — skip enrichment */
+      }
+    }
     return {
       concept: issue.concept,
       targetChakra: issue.targetChakra,
@@ -2654,6 +2673,7 @@ export function sunoPipelineRoutes(db: Db) {
           ? (stages.soundPrompt as string)
           : undefined,
       hints,
+      architectData,
     };
   }
 
@@ -2812,6 +2832,222 @@ export function sunoPipelineRoutes(db: Db) {
         build: buildSoundPromptPrompt,
         maxTokens: 600,
       }),
+  );
+
+  // ── POST /architect-prompt ────────────────────────────────────────────────
+  // Stateless: accepts a target state + optional constraints, returns the full
+  // ArchitectPromptContract JSON (label, use_case, arc, stack, suno fields).
+  // Does NOT require an issue ID — usable standalone for prompt previewing.
+  router.post(
+    "/suno-pipeline/architect-prompt",
+    validate(
+      z.object({
+        companyId: z.string().min(1),
+        state: z.string().min(1),
+        constraints: z
+          .object({
+            bpm: z.number().int().min(40).max(200).optional(),
+            percussion: z.boolean().optional(),
+            length: z.number().int().min(1).max(180).optional(),
+          })
+          .optional(),
+      }),
+    ),
+    async (req, res) => {
+      const { companyId, state, constraints } = req.body as {
+        companyId: string;
+        state: string;
+        constraints?: { bpm?: number; percussion?: boolean; length?: number };
+      };
+      try {
+        assertCompanyAccess(req, companyId);
+        const contract = await generateArchitectPrompt(state, constraints ?? {});
+        res.json({ ok: true, contract });
+      } catch (err) {
+        logger.error({ err, state }, "[architect-prompt] generation failed");
+        res.status(500).json({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+
+  // ── POST /:id/generate/architect-prompt ────────────────────────────────────
+  // Issue-scoped: generates an Architect prompt, deposits it as the soundPrompt
+  // stage, then immediately fires Raziel (browser) to generate the song in
+  // Suno Custom mode using all three fields.
+  router.post(
+    "/suno-pipeline/:id/generate/architect-prompt",
+    validate(
+      z.object({
+        companyId: z.string().min(1),
+        state: z.string().min(1),
+        constraints: z
+          .object({
+            bpm: z.number().int().min(40).max(200).optional(),
+            percussion: z.boolean().optional(),
+            length: z.number().int().min(1).max(180).optional(),
+          })
+          .optional(),
+      }),
+    ),
+    async (req, res) => {
+      const { id } = req.params as { id: string };
+      const { companyId, state, constraints } = req.body as {
+        companyId: string;
+        state: string;
+        constraints?: { bpm?: number; percussion?: boolean; length?: number };
+      };
+      try {
+        assertCompanyAccess(req, companyId);
+
+        // Step 1: generate the structured prompt contract
+        const contract = await generateArchitectPrompt(state, constraints ?? {});
+        logger.info({ issueId: id, label: contract.label }, "[architect-prompt] contract generated");
+
+        // Step 2: deposit contract into metadata.stages (same pattern as /deposit)
+        const actor = getActorInfo(req);
+        const existing = await loadIssueOrThrow(id, companyId);
+        const meta = (existing.metadata ?? {}) as Record<string, unknown>;
+        const stagesNow = (meta.stages && typeof meta.stages === "object"
+          ? { ...(meta.stages as Record<string, unknown>) }
+          : {}) as Record<string, unknown>;
+
+        stagesNow.soundPrompt = contract.suno.prompt;
+        stagesNow.architectContract = JSON.stringify(contract);
+
+        const nextMeta = appendHistory(
+          { ...meta, stages: stagesNow },
+          {
+            stage: "soundPrompt",
+            output: contract.suno.prompt,
+            at: new Date().toISOString(),
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            agentName: "Uriel (Architect Mode)",
+            status: existing.status as SunoStatus,
+          },
+        );
+
+        await db
+          .update(sunoIssues)
+          .set({ metadata: nextMeta, updatedAt: new Date() })
+          .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)));
+
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "suno_issue.architect_prompt_generated",
+          entityType: "suno_issue",
+          entityId: id,
+          details: { label: contract.label, bpm: contract.stack.bpm, hz: contract.stack.brainwave_hz },
+        });
+
+        // Step 3: generate the song via Raziel in Custom mode
+        let sunoResult = null;
+        try {
+          sunoResult = await generateViaSuno(contract.suno);
+          if (sunoResult) {
+            // Use nextMeta (already has soundPrompt + architectContract) as base,
+            // not the stale existing.metadata — avoids clobbering the first write.
+            const stagesAfter = { ...(stagesNow), audioUrl: sunoResult.audioUrl, sunoSongId: sunoResult.songId };
+            const nextMetaAfter = appendHistory(
+              { ...nextMeta, stages: stagesAfter },
+              {
+                stage: "audioUrl",
+                output: sunoResult.audioUrl,
+                at: new Date().toISOString(),
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                agentName: "Raziel (Architect Custom Mode)",
+                status: existing.status as SunoStatus,
+              },
+            );
+            await db
+              .update(sunoIssues)
+              .set({ sunoSongId: sunoResult.songId, metadata: nextMetaAfter, updatedAt: new Date() })
+              .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)));
+            await logActivity(db, {
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "suno_issue.song_generated",
+              entityType: "suno_issue",
+              entityId: id,
+              details: { songId: sunoResult.songId, audioUrl: sunoResult.audioUrl },
+            });
+          }
+        } catch (razielErr) {
+          logger.warn({ issueId: id, err: razielErr }, "[architect-prompt] Raziel generation failed (non-fatal — contract still deposited)");
+        }
+
+        // Step 4: Jophiel — cover art (best-effort, non-fatal)
+        let thumbnailUrl: string | null = null;
+        try {
+          const freshIssue = await loadIssueOrThrow(id, companyId);
+          const coverCtx = ctxFromIssue(freshIssue);
+          const visualMessages = buildVisualPromptPrompt(coverCtx);
+          const visualPrompt = await callOpenRouter({
+            messages: visualMessages,
+            temperature: 0.7,
+            maxTokens: 500,
+          });
+          const coverArt = await generateCoverArt({ prompt: visualPrompt, aspectRatio: "1:1" });
+          thumbnailUrl = coverArt.dataUrl;
+
+          const afterAudio = await loadIssueOrThrow(id, companyId);
+          const metaCover = (afterAudio.metadata ?? {}) as Record<string, unknown>;
+          const stagesCover = {
+            ...((metaCover.stages && typeof metaCover.stages === "object" ? metaCover.stages : {}) as Record<string, unknown>),
+            visualPrompt,
+            thumbnailUrl: coverArt.dataUrl,
+          };
+          const nextMetaCover = appendHistory(
+            { ...metaCover, stages: stagesCover, lastCoverArtModel: coverArt.model },
+            {
+              stage: "thumbnailUrl",
+              output: { mimeType: coverArt.mimeType, dataUrlBytes: coverArt.dataUrl.length, elapsedMs: coverArt.elapsedMs },
+              at: new Date().toISOString(),
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              agentName: "Jophiel (Architect Mode)",
+              status: afterAudio.status as SunoStatus,
+            },
+          );
+          await db
+            .update(sunoIssues)
+            .set({ thumbnailUrl: coverArt.dataUrl, metadata: nextMetaCover, updatedAt: new Date() })
+            .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, companyId)));
+          logger.info({ issueId: id, model: coverArt.model, elapsedMs: coverArt.elapsedMs }, "[architect-prompt] cover art generated");
+        } catch (jophielErr) {
+          logger.warn({ issueId: id, err: jophielErr }, "[architect-prompt] cover art failed (non-fatal)");
+        }
+
+        res.json({
+          ok: true,
+          contract,
+          songGenerated: !!sunoResult,
+          coverArtGenerated: !!thumbnailUrl,
+          ...(sunoResult ? { songId: sunoResult.songId, audioUrl: sunoResult.audioUrl } : {}),
+          ...(thumbnailUrl ? { thumbnailUrl } : {}),
+        });
+      } catch (err) {
+        logger.error({ err, issueId: id }, "[architect-prompt] issue generation failed");
+        res.status(500).json({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
   );
 
   // Jophiel — image-gen prompt for cover art

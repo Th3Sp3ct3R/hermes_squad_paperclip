@@ -400,6 +400,28 @@ export const sunoPipelineApi = {
       `/suno-pipeline/batch/${encodeURIComponent(batchId)}/execute`,
       { companyId, ...input },
     ),
+
+  // ── Architect Mode ─────────────────────────────────────────────────────
+  /**
+   * Stateless prompt generator — returns a full ArchitectPromptContract with
+   * three Suno Custom-mode fields (styles / exclude_styles / prompt).
+   */
+  architectPrompt: (companyId: string, state: string, constraints?: { bpm?: number; percussion?: boolean; length?: number }) =>
+    api.post<{ ok: boolean; contract: ArchitectPromptContract }>("/suno-pipeline/architect-prompt", {
+      companyId,
+      state,
+      constraints,
+    }),
+
+  /**
+   * Issue-scoped: generates Architect prompt, deposits it on the issue,
+   * then fires Raziel in Custom mode to generate the song.
+   */
+  generateArchitectPrompt: (id: string, companyId: string, state: string, constraints?: { bpm?: number; percussion?: boolean; length?: number }) =>
+    api.post<{ ok: boolean; contract: ArchitectPromptContract; songGenerated: boolean; songId?: string; audioUrl?: string }>(
+      `/suno-pipeline/${encodeURIComponent(id)}/generate/architect-prompt`,
+      { companyId, state, constraints },
+    ),
 };
 
 // ── Phase 8 generation input ───────────────────────────────────────────────
@@ -490,6 +512,28 @@ export interface BatchSummary {
   failed: number;
   createdAt: string;
   targetChakra: string | null;
+}
+
+export interface ArchitectStack {
+  brainwave_band: string;
+  brainwave_hz: number | null;
+  carrier_hz: number | null;
+  bpm: number;
+  bpm_range: [number, number];
+  percussion: boolean;
+}
+
+export interface ArchitectPromptContract {
+  label: string;
+  use_case: string;
+  arc: "Dark";
+  stack: ArchitectStack;
+  suno: {
+    styles: string;
+    exclude_styles: string;
+    prompt: string;
+    title_suggestion: string;
+  };
 }
 
 export interface ExecuteBatchInput {

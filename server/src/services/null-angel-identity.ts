@@ -717,6 +717,224 @@ export const MOOD_PRESETS: MoodPreset[] = [
 
 export type MoodPresetId = MoodPreset["id"];
 
+// ── 12. ARCHITECT PROMPT SPEC ────────────────────────────────────────────────
+// Three-field Suno output contract (Custom mode): styles / exclude_styles / prompt.
+// Implements the "Architect / Null Angel Deep-Focus Prompt Generator" spec.
+
+export interface ArchitectStack {
+  brainwave_band: string;
+  brainwave_hz: number | null;
+  carrier_hz: number | null;
+  bpm: number;
+  bpm_range: [number, number];
+  percussion: boolean;
+}
+
+export interface ArchitectSunoFields {
+  styles: string;
+  exclude_styles: string;
+  prompt: string;
+  title_suggestion: string;
+}
+
+export interface ArchitectPromptContract {
+  label: string;
+  use_case: string;
+  arc: "Dark";
+  stack: ArchitectStack;
+  suno: ArchitectSunoFields;
+}
+
+/** §5 tempo math: hz × 60 ÷ subdivision. Returns the two canonical BPM sweet spots. */
+export function tempoFromHz(hz: number): [number, number] {
+  const base = hz * 60;
+  return [Math.round(base / 6), Math.round(base / 4)];
+}
+
+/** §7 style anchor library — pull from these, never artist names in prompt field. */
+export const ARCHITECT_STYLE_ANCHORS = {
+  ambient_texture: [
+    "dark minimalist ambient",
+    "ritual drone",
+    "GAS-inspired stillness",
+    "Burial-adjacent space",
+    "Donato Dozzy ritual drone",
+    "cinematic drone",
+    "sub-bass focus",
+    "cinematic but restrained",
+    "instrumental",
+  ],
+  hiphop_build: [
+    "dark minimalist hip-hop",
+    "ambient trap",
+    "lo-fi noir",
+    "Earl Sweatshirt cold density",
+  ],
+  vulnerable: [
+    "Frank Ocean restraint",
+    "Mac Miller Circles warmth",
+  ],
+} as const;
+
+/** §6 exclude-styles library — three tiers. */
+export const ARCHITECT_BLOCKLIST = {
+  /** Always present for Dark Arc focus. */
+  base: "vocals, singing, lyrics, hooks, buildup, drop, crescendo, edm, pop, drill, trap hi-hats, choir, orchestral swell, major key, happy, bright, hype, motivational, energetic, upbeat",
+  /** Anti-cliché — aggressively exclude, these cheapen the identity. */
+  anti_cliche: "lo-fi hip hop, vinyl crackle, rain, warm emotional piano, ambient pads cliche",
+  /** Add when in pure-ambient / no-percussion mode. */
+  pure_ambient: "melody, percussion, drums",
+} as const;
+
+/** §5 state → stack mapping. */
+export const ARCHITECT_STATE_MAP: Record<string, {
+  label: string;
+  use_case: string;
+  brainwave_band: string;
+  brainwave_hz: number | null;
+  carrier_hz: number | null;
+  bpm_range: [number, number];
+  percussion: boolean;
+}> = {
+  "deep-work": {
+    label: "ARCHITECT MODE",
+    use_case: "writing, strategy, systems thinking, mapping",
+    brainwave_band: "Theta",
+    brainwave_hz: 6,
+    carrier_hz: 528,
+    bpm_range: [60, 68],
+    percussion: false,
+  },
+  "coding": {
+    label: "AGENT PROTOCOL",
+    use_case: "frontend, backend, debugging, deployment",
+    brainwave_band: "Theta",
+    brainwave_hz: 6,
+    carrier_hz: 528,
+    bpm_range: [92, 100],
+    percussion: true,
+  },
+  "writing": {
+    label: "ARCHITECT MODE",
+    use_case: "long-form writing, strategy, systems thinking",
+    brainwave_band: "Theta",
+    brainwave_hz: 6,
+    carrier_hz: 528,
+    bpm_range: [60, 68],
+    percussion: false,
+  },
+  "creative-flow": {
+    label: "CREATIVE FLOW",
+    use_case: "design, music composition, visual creativity",
+    brainwave_band: "Theta→Alpha",
+    brainwave_hz: 7,
+    carrier_hz: 432,
+    bpm_range: [80, 95],
+    percussion: false,
+  },
+  "calm-admin": {
+    label: "CALM PROTOCOL",
+    use_case: "admin, emails, ops, planning",
+    brainwave_band: "Alpha",
+    brainwave_hz: 10,
+    carrier_hz: 432,
+    bpm_range: [80, 95],
+    percussion: false,
+  },
+  "shadow-work": {
+    label: "SHADOW PROTOCOL",
+    use_case: "reflection, emotional processing, identity integration",
+    brainwave_band: "Theta–Delta",
+    brainwave_hz: 4.5,
+    carrier_hz: 963,
+    bpm_range: [60, 75],
+    percussion: false,
+  },
+  "sleep": {
+    label: "NEURAL SHUTDOWN",
+    use_case: "sleep transition, neural descent",
+    brainwave_band: "Theta–Delta",
+    brainwave_hz: 4.5,
+    carrier_hz: null,
+    bpm_range: [40, 55],
+    percussion: false,
+  },
+};
+
+/** Resolve a free-text state to the nearest ARCHITECT_STATE_MAP key. */
+export function resolveArchitectState(state: string): string {
+  const normalized = state.toLowerCase().trim();
+  if (/cod(e|ing)|debug|deploy|build|frontend|backend/.test(normalized)) return "coding";
+  if (/writ|strateg|system|map|plan/.test(normalized)) return "writing";
+  if (/design|creative|art|visual|music compos/.test(normalized)) return "creative-flow";
+  if (/admin|email|op|organiz/.test(normalized)) return "calm-admin";
+  if (/shadow|reflect|integrat|process|identit/.test(normalized)) return "shadow-work";
+  if (/sleep|descend|shut/.test(normalized)) return "sleep";
+  return "deep-work"; // default
+}
+
+/**
+ * Build Uriel's system prompt for Architect Mode — outputs structured JSON
+ * with three distinct Suno Custom-mode fields (styles, exclude_styles, prompt).
+ * Embeds the Wendell Filter and §9 science guardrail.
+ */
+export function buildArchitectUrielSystemPrompt(stack: ArchitectStack, label: string, use_case: string): string {
+  const baseBlocklist = [ARCHITECT_BLOCKLIST.base, ARCHITECT_BLOCKLIST.anti_cliche].join(", ");
+  const fullBlocklist = stack.percussion
+    ? baseBlocklist
+    : [baseBlocklist, ARCHITECT_BLOCKLIST.pure_ambient].join(", ");
+
+  const stylePool = stack.percussion
+    ? [...ARCHITECT_STYLE_ANCHORS.hiphop_build, ...ARCHITECT_STYLE_ANCHORS.ambient_texture.slice(0, 4)]
+    : ARCHITECT_STYLE_ANCHORS.ambient_texture;
+
+  return `You are Uriel, Sound Prompt Engineer for the Architect / Null Angel identity. You generate Suno Custom-mode prompts for functional deep-focus music — sound designed to regulate nervous-system state, not to entertain.
+
+REQUESTED MODE: ${label}
+USE CASE: ${use_case}
+BRAINWAVE TARGET: ${stack.brainwave_band} @ ${stack.brainwave_hz ?? "edge"} Hz
+CARRIER: ${stack.carrier_hz ? `${stack.carrier_hz} Hz` : "none"}
+BPM: ${stack.bpm} (range ${stack.bpm_range[0]}–${stack.bpm_range[1]})
+PERCUSSION: ${stack.percussion ? "sparse + dry (no hi-hat clutter, no snare rolls, no fills)" : "none"}
+
+SOUND DNA (non-negotiable):
+- Tempo: ${stack.bpm_range[0]}–${stack.bpm_range[1]} BPM. Slow, hypnotic, time-dilating.
+- Pulse: theta pulse FEEL — slow amplitude modulation around ${stack.brainwave_hz ?? 6} Hz. Texture, not a literal tone.
+- Carrier: ${stack.carrier_hz ? `audible around ${stack.carrier_hz} Hz` : "not specified — use low sub-bass grounding"}.
+- Dynamics: FLAT. No buildup, no drop, no crescendo, no resolution. Continuous state.
+- Evolution: pad shift every ~16 bars, slow filter sweeps only.
+- Register: emotionally neutral to ominous-but-controlled. Architectural, restrained, void-black.
+- Loopable: no intro, no outro, flat in/out.
+- No hooks, no melodic resolution, no major-key lift.
+
+THE WENDELL FILTER — build exclude_styles by asking: "Does this element perform, hype, beg, or spike?" If yes → exclude it.
+The blocklist is not arbitrary — it strips every Wendell signal so nothing in the track reacts.
+
+STYLE POOL (pick 5–7 that fit):
+${stylePool.join(", ")}
+
+BASE EXCLUDE LIST (always include):
+${fullBlocklist}
+
+SCIENCE GUARDRAIL (critical — honor this in the prompt field):
+- DO: reference tempo, brainwave Hz feel, carrier for texture direction. This is aesthetic mythology that biases the model.
+- DO NOT: claim the track literally locks brainwaves or heals. Never assert Solfeggio health claims.
+- Literal Hz precision requires an external binaural/isochronic DAW layer, not Suno.
+
+OUTPUT CONTRACT — return EXACTLY this JSON shape, no markdown fences, no preamble:
+{
+  "styles": "<5–7 comma-separated genre/texture descriptors from the style pool>",
+  "exclude_styles": "<full blocklist — base + anti-cliché + mode-specific>",
+  "prompt": "<60–180 words: BPM, pulse feel @ Hz, carrier, structure cadence, flat-dynamic clause, void-black register. HOW it behaves — not what it IS.>",
+  "title_suggestion": "<one cold word or short phrase, in-register — e.g. High-Rise, Tunnel, Containment>"
+}
+
+Field roles (do not blur these):
+- styles = sonic universe / genre. WHAT it is.
+- exclude_styles = control surface. What must NOT appear. Wendell filed out.
+- prompt = behavior and rules. HOW it behaves.`;
+}
+
 // ── 9. ENTITY_ARCHETYPES ─────────────────────────────────────────────────────
 
 export const ENTITY_ARCHETYPES = {

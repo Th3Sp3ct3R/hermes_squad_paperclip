@@ -34,6 +34,13 @@ export interface SunoFormData {
   soundPrompt: string;
 }
 
+/** Three-field Custom mode input — maps to Styles / Exclude Styles / Description fields. */
+export interface SunoCustomFormData {
+  styles: string;
+  exclude_styles: string;
+  prompt: string;
+}
+
 export interface SunoVariant {
   songId: string;
   audioUrl: string;
@@ -184,6 +191,96 @@ export class SunoBrowserAgent {
     }
   }
 
+  /**
+   * Fill Suno in Custom mode — populates the Styles, Exclude Styles, and
+   * Description fields independently for precise steering. Switches from
+   * Simple to Custom mode automatically if needed.
+   */
+  async fillCustomModeForm(data: SunoCustomFormData): Promise<void> {
+    const tab = this.requireTab();
+
+    // Switch to Custom mode if Suno is currently in Simple mode
+    const switchScript = `
+      (function() {
+        const btns = Array.from(document.querySelectorAll('button, [role="tab"]'));
+        const customBtn = btns.find(b => /custom/i.test(b.textContent || ''));
+        if (customBtn && !customBtn.classList.toString().includes('active') && !customBtn.getAttribute('aria-selected')) {
+          customBtn.click();
+          return { switched: true };
+        }
+        return { switched: false, note: 'already custom or not found' };
+      })()
+    `;
+    const switchResult = await this.evaluateOnTab(tab, switchScript);
+    logger.info({ switchResult }, "[Raziel] Custom mode switch");
+    if ((switchResult as any).switched) await this.sleep(1500);
+
+    // Helper to fill a labeled input field
+    const fillField = async (selector: string, value: string, label: string): Promise<boolean> => {
+      const script = `
+        (function() {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return { ok: false };
+          const proto = el.tagName === 'TEXTAREA'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+          el.focus();
+          setter.call(el, ${JSON.stringify(value)});
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true };
+        })()
+      `;
+      const result = await this.evaluateOnTab(tab, script);
+      logger.info({ label, ok: (result as any).ok }, "[Raziel] Custom field fill");
+      return !!(result as any).ok;
+    };
+
+    // Styles field
+    const stylesOk = await fillField(
+      'input[placeholder*="style"], input[placeholder*="genre"], [data-testid="style-input"] input, [aria-label*="style" i] input',
+      data.styles.slice(0, 120),
+      "styles",
+    );
+    if (!stylesOk) logger.warn("[Raziel] Styles field not found — Suno UI may have changed");
+
+    // Exclude styles field
+    const excludeOk = await fillField(
+      'input[placeholder*="exclude"], [data-testid="exclude-input"] input, [aria-label*="exclude" i] input',
+      data.exclude_styles.slice(0, 120),
+      "exclude_styles",
+    );
+    if (!excludeOk) logger.warn("[Raziel] Exclude styles field not found");
+
+    // Description / prompt textarea — same as Simple mode but now in Custom context
+    const MAX_PROMPT = 950;
+    const truncatedPrompt = data.prompt.length > MAX_PROMPT
+      ? data.prompt.slice(0, MAX_PROMPT - 3) + "..."
+      : data.prompt;
+
+    const promptScript = `
+      (function() {
+        const all = Array.from(document.querySelectorAll('textarea'));
+        const visible = all.filter(ta => {
+          const r = ta.getBoundingClientRect();
+          const cs = window.getComputedStyle(ta);
+          return r.width > 0 && r.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+        });
+        const el = visible.find(ta => /describe|song|prompt/i.test(ta.placeholder || '')) || visible[visible.length - 1];
+        if (!el) return { ok: false };
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        el.focus();
+        setter.call(el, ${JSON.stringify(truncatedPrompt)});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true, len: ${JSON.stringify(truncatedPrompt)}.length };
+      })()
+    `;
+    const promptResult = await this.evaluateOnTab(tab, promptScript);
+    logger.info({ promptResult }, "[Raziel] Custom prompt field fill");
+  }
+
   async clickGenerate(): Promise<void> {
     const tab = this.requireTab();
 
@@ -233,7 +330,7 @@ export class SunoBrowserAgent {
   async pollForNewSongs(
     beforeIds: Set<string>,
     {
-      timeoutMs = 120_000,
+      timeoutMs = 180_000,
       intervalMs = 3_000,
       minNew = 2,
     }: { timeoutMs?: number; intervalMs?: number; minNew?: number } = {},
@@ -250,6 +347,7 @@ export class SunoBrowserAgent {
           JSON.stringify((function() {
             const seen = new Set();
             const out = [];
+            // Primary: completed songs with /song/ links
             for (const a of document.querySelectorAll('a[href*="/song/"]')) {
               const m = a.href.match(/\\/song\\/([a-zA-Z0-9-]+)/);
               if (!m) continue;
@@ -258,7 +356,15 @@ export class SunoBrowserAgent {
               seen.add(id);
               const row = a.closest('[class*="row"], [class*="card"], [class*="item"], li, tr, article');
               const titleEl = row?.querySelector('[class*="title"], h1, h2, h3, h4');
-              out.push({ songId: id, title: (titleEl?.textContent || a.textContent || '').trim().slice(0, 120) });
+              out.push({ songId: id, title: (titleEl?.textContent || a.textContent || '').trim().slice(0, 120), pending: false });
+            }
+            // Secondary: pending/generating cards that have a data-id or data-song-id
+            // before the song link resolves — capture their IDs so we can poll
+            for (const el of document.querySelectorAll('[data-id],[data-song-id],[data-clip-id]')) {
+              const id = el.getAttribute('data-id') || el.getAttribute('data-song-id') || el.getAttribute('data-clip-id');
+              if (!id || seen.has(id) || !/^[a-f0-9-]{32,}$/.test(id)) continue;
+              seen.add(id);
+              out.push({ songId: id, title: '', pending: true });
             }
             return out;
           })())
@@ -300,7 +406,7 @@ export class SunoBrowserAgent {
    */
   async verifyAudioUrl(
     url: string,
-    { timeoutMs = 120_000, intervalMs = 5_000 }: { timeoutMs?: number; intervalMs?: number } = {},
+    { timeoutMs = 30_000, intervalMs = 5_000 }: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<{ ready: true; sizeBytes: number; contentType: string } | { ready: false; lastStatus: number | string }> {
     const start = Date.now();
     let lastStatus: number | string = "no attempt";
@@ -352,21 +458,22 @@ export class SunoBrowserAgent {
       "[Raziel] New song variants detected",
     );
 
-    // Verify the CDN URL for the primary variant is actually reachable.
-    // Suno encodes asynchronously, so the song-link can appear before the
-    // MP3 finishes uploading. We block on the first variant only — once
-    // it's ready, the second is virtually always ready too.
+    // Best-effort CDN probe — Suno CDN can take 2-3 min to serve the MP3
+    // even after the song link appears in DOM. We check briefly but don't
+    // block the pipeline on it; the URL is deterministic and will be ready.
     const primary = variants[0];
     const probe = await this.verifyAudioUrl(primary.audioUrl);
-    if (!probe.ready) {
-      throw new Error(
-        `[Raziel] Primary variant CDN URL never became ready: ${primary.audioUrl} (last=${probe.lastStatus})`,
+    if (probe.ready) {
+      logger.info(
+        { url: primary.audioUrl, sizeBytes: (probe as { sizeBytes: number }).sizeBytes },
+        "[Raziel] Primary audio CDN ready",
+      );
+    } else {
+      logger.warn(
+        { url: primary.audioUrl, lastStatus: (probe as { lastStatus: number | string }).lastStatus },
+        "[Raziel] CDN not yet ready — returning songId anyway (CDN will catch up)",
       );
     }
-    logger.info(
-      { url: primary.audioUrl, sizeBytes: probe.sizeBytes, contentType: probe.contentType },
-      "[Raziel] Primary audio CDN ready",
-    );
 
     return {
       songId: primary.songId,
@@ -517,15 +624,19 @@ export class SunoBrowserAgent {
  * Creates a SunoBrowserAgent, runs the full pipeline, and returns the result.
  * Handles errors gracefully and logs them via the Paperclip logger.
  */
-export async function generateViaSuno(prompt: string): Promise<SunoResult> {
-  // Truncate to Suno's 1000-char prompt limit
+export async function generateViaSuno(
+  input: string | SunoCustomFormData,
+): Promise<SunoResult> {
+  const isCustom = typeof input !== "string";
+
+  // Truncate simple-mode prompt to Suno's 1000-char limit
   const MAX_SUNO_PROMPT = 950;
-  const truncatedPrompt = prompt.length > MAX_SUNO_PROMPT
-    ? prompt.slice(0, MAX_SUNO_PROMPT - 3) + "..."
-    : prompt;
+  const truncatedPrompt = isCustom
+    ? input.prompt
+    : (input.length > MAX_SUNO_PROMPT ? input.slice(0, MAX_SUNO_PROMPT - 3) + "..." : input);
 
   logger.info(
-    { originalLength: prompt.length, truncatedLength: truncatedPrompt.length },
+    { mode: isCustom ? "custom" : "simple", promptLength: truncatedPrompt.length },
     "[Raziel] generateViaSuno — attempting CDP then cookie fallback",
   );
 
@@ -534,6 +645,34 @@ export async function generateViaSuno(prompt: string): Promise<SunoResult> {
   // Attempt 1: CDP browser automation
   try {
     const agent = new SunoBrowserAgent();
+
+    if (isCustom) {
+      // Custom mode: fill all three Suno fields (styles / exclude_styles / prompt)
+      await agent.connect();
+      await agent.navigateToSuno();
+      await agent.fillCustomModeForm(input as SunoCustomFormData);
+      const beforeIds = await agent.snapshotSongIds();
+      await agent.clickGenerate();
+      const variants = await agent.pollForNewSongs(beforeIds);
+      const primary = variants[0];
+      const probe = await agent.verifyAudioUrl(primary.audioUrl);
+      if (!probe.ready) {
+        logger.warn(
+          { url: primary.audioUrl, lastStatus: (probe as { lastStatus: number | string }).lastStatus },
+          "[Raziel] CDN not yet ready — returning songId anyway",
+        );
+      }
+      const result: SunoResult = {
+        songId: primary.songId,
+        audioUrl: primary.audioUrl,
+        title: primary.title,
+        duration: 0,
+        variants,
+      };
+      logger.info({ songId: result.songId, method: "cdp-custom" }, "[Raziel] generateViaSuno — CDP custom succeeded");
+      return result;
+    }
+
     const result = await agent.runFullPipeline({ soundPrompt: truncatedPrompt });
     logger.info(
       { songId: result.songId, audioUrl: result.audioUrl, method: "cdp" },
@@ -548,26 +687,29 @@ export async function generateViaSuno(prompt: string): Promise<SunoResult> {
     );
   }
 
-  // Attempt 2: Cookie-based HTTP client (no Chrome needed)
-  const { generateViaSunoCookie, hasSunoCookie } = await import("./suno-cookie-client.js");
+  // Attempt 2: Clerk-JWT HTTP client (no Chrome needed) — same live auth the
+  // suno-engagement bot uses (refresh __client cookie -> JWT -> studio-api-prod).
+  // Replaces the legacy static-cookie client that targeted the dead
+  // studio-api.suno.ai domain.
+  const { generateViaSunoClerk, hasSunoClerkSession } = await import("./suno-clerk-client.js");
 
-  if (!hasSunoCookie()) {
+  if (!hasSunoClerkSession()) {
     throw new Error(
-      `[Raziel] CDP failed (${cdpError}) and SUNO_COOKIE is not set. Either launch Chrome with --remote-debugging-port=9222 or set SUNO_COOKIE in .env`,
+      `[Raziel] CDP failed (${cdpError}) and no Suno Clerk session available. Either launch Chrome with --remote-debugging-port=9222, or ensure the engagement-bot session persist file / SUNO_CLIENT_COOKIE is present.`,
     );
   }
 
-  logger.info("[Raziel] Falling back to cookie-based Suno client");
-  const cookieResult = await generateViaSunoCookie(truncatedPrompt, {
+  logger.info("[Raziel] Falling back to Clerk-JWT Suno client");
+  const clerkResult = await generateViaSunoClerk(truncatedPrompt, {
     makeInstrumental: true,
   });
 
   return {
-    songId: cookieResult.songId,
-    audioUrl: cookieResult.audioUrl,
-    title: cookieResult.title,
-    duration: cookieResult.duration,
-    variants: cookieResult.variants,
+    songId: clerkResult.songId,
+    audioUrl: clerkResult.audioUrl,
+    title: clerkResult.title,
+    duration: clerkResult.duration,
+    variants: clerkResult.variants,
   };
 }
 

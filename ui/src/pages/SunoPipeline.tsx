@@ -53,6 +53,7 @@ import {
   SUNO_BOARD_COLUMNS,
   SUNO_CHAKRAS,
   SUNO_CHAKRA_FREQUENCIES,
+  type ArchitectPromptContract,
   type SunoAudioVariant,
   type SunoChakra,
   type SunoIssue,
@@ -258,6 +259,19 @@ export function SunoPipeline() {
   // ── Task B: Batch sphere generation state ────────────────────────────────
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // ── Architect Mode state ─────────────────────────────────────────────────
+  const [architectOpen, setArchitectOpen] = useState(false);
+  const [architectState, setArchitectState] = useState("deep coding tunnel");
+  const [architectPercussion, setArchitectPercussion] = useState(false);
+  const [architectBpm, setArchitectBpm] = useState<string>("");
+  const [architectContract, setArchitectContract] = useState<null | {
+    label: string; use_case: string; arc: string;
+    stack: { brainwave_band: string; brainwave_hz: number | null; carrier_hz: number | null; bpm: number; bpm_range: [number, number]; percussion: boolean };
+    suno: { styles: string; exclude_styles: string; prompt: string; title_suggestion: string };
+  }>(null);
+  const [architectLoading, setArchitectLoading] = useState(false);
+  const [architectError, setArchitectError] = useState<string | null>(null);
 
   /**
    * Fire all BATCH_PRESETS: create each as a new SunoIssue then immediately
@@ -594,6 +608,148 @@ export function SunoPipeline() {
               ))}
             </div>
           </div>
+
+          {/* ── Architect Mode chip ── */}
+          <div className="mt-2">
+            <button
+              onClick={() => setArchitectOpen((o) => !o)}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors",
+                architectOpen
+                  ? "border-foreground/40 bg-foreground/10 text-foreground"
+                  : "border-border/50 bg-card/50 text-muted-foreground hover:text-foreground hover:border-foreground/20",
+              )}
+            >
+              <span>⬛</span>
+              <span>Architect Mode</span>
+              <span className="text-xs opacity-50">Custom 3-field</span>
+            </button>
+          </div>
+
+          {/* ── Architect Mode panel ── */}
+          {architectOpen && (
+            <div className="rounded-lg border border-border/60 bg-card/30 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground">
+                  Architect / Null Angel · Dark Arc · Custom Mode
+                </p>
+                {architectContract && (
+                  <span className="text-xs font-mono text-muted-foreground">
+                    {architectContract.label} · {architectContract.stack.bpm} BPM · {architectContract.stack.brainwave_hz ?? "—"} Hz
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                <div className="md:col-span-7 space-y-1">
+                  <Label className="text-xs text-muted-foreground">Target State</Label>
+                  <Input
+                    placeholder="deep coding tunnel, writing/strategy, shadow-work reflection…"
+                    value={architectState}
+                    onChange={(e) => { setArchitectState(e.target.value); setArchitectContract(null); }}
+                    className="font-mono text-sm"
+                  />
+                </div>
+                <div className="md:col-span-2 space-y-1">
+                  <Label className="text-xs text-muted-foreground">BPM override</Label>
+                  <Input
+                    placeholder="auto"
+                    value={architectBpm}
+                    onChange={(e) => setArchitectBpm(e.target.value)}
+                    className="font-mono text-sm"
+                  />
+                </div>
+                <div className="md:col-span-2 flex items-center gap-2 pt-5">
+                  <input
+                    type="checkbox"
+                    id="arch-percussion"
+                    checked={architectPercussion}
+                    onChange={(e) => setArchitectPercussion(e.target.checked)}
+                    className="rounded"
+                  />
+                  <Label htmlFor="arch-percussion" className="text-xs cursor-pointer">Percussion</Label>
+                </div>
+                <div className="md:col-span-1 pt-5">
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    disabled={architectLoading || !architectState.trim()}
+                    onClick={async () => {
+                      setArchitectLoading(true);
+                      setArchitectError(null);
+                      setArchitectContract(null);
+                      try {
+                        const bpmNum = architectBpm ? parseInt(architectBpm, 10) : undefined;
+                        const res = await sunoPipelineApi.architectPrompt(
+                          selectedCompanyId!,
+                          architectState,
+                          {
+                            percussion: architectPercussion,
+                            ...(bpmNum && !isNaN(bpmNum) ? { bpm: bpmNum } : {}),
+                          },
+                        );
+                        setArchitectContract(res.contract);
+                      } catch (e) {
+                        setArchitectError(e instanceof Error ? e.message : String(e));
+                      } finally {
+                        setArchitectLoading(false);
+                      }
+                    }}
+                  >
+                    {architectLoading ? "…" : "Build"}
+                  </Button>
+                </div>
+              </div>
+
+              {architectError && (
+                <p className="text-xs text-destructive font-mono">{architectError}</p>
+              )}
+
+              {architectContract && (
+                <div className="space-y-2 pt-1">
+                  <div className="rounded border border-border/40 bg-background/60 p-3 space-y-2 text-xs font-mono">
+                    <div>
+                      <span className="text-muted-foreground uppercase tracking-wider">Styles · </span>
+                      <span className="text-foreground">{architectContract.suno.styles}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground uppercase tracking-wider">Exclude · </span>
+                      <span className="text-foreground/70">{architectContract.suno.exclude_styles.slice(0, 120)}…</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground uppercase tracking-wider">Prompt · </span>
+                      <span className="text-foreground">{architectContract.suno.prompt}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground uppercase tracking-wider">Title · </span>
+                      <span className="text-foreground italic">{architectContract.suno.title_suggestion}</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        navigator.clipboard.writeText(JSON.stringify(architectContract, null, 2));
+                      }}
+                    >
+                      Copy JSON
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setConceptDraft(architectContract.suno.prompt);
+                        setGenreDraft(architectContract.suno.styles);
+                        setArchitectOpen(false);
+                      }}
+                    >
+                      Load into Create
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Preset selected: show summary + Create ── */}
           {/* ── Custom: show full form ── */}

@@ -29,27 +29,28 @@ const OPENROUTER_BASE =
  */
 export const SUNO_MODELS = {
   /** Zadkiel — lyrics, creative writing. */
-  lyrics: "minimax/minimax-m2.5:free",
+  lyrics: "google/gemma-4-31b-it:free",
   /** Uriel — sound description text, structured + tag-heavy. */
-  soundPrompt: "minimax/minimax-m2.5:free",
+  soundPrompt: "google/gemma-4-31b-it:free",
   /** Jophiel — image gen prompt, vivid sensory detail. */
-  visualPrompt: "minimax/minimax-m2.5:free",
+  visualPrompt: "google/gemma-4-31b-it:free",
   /** Gabriel — release notes, social copy. */
-  releaseCopy: "minimax/minimax-m2.5:free",
+  releaseCopy: "google/gemma-4-31b-it:free",
 } as const;
 
 const FALLBACK_MODEL =
-  process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
+  process.env.OPENROUTER_MODEL ?? "google/gemma-4-31b-it:free";
 
 /**
  * Model fallback chain used when the primary model returns 429 (rate
- * limit) or 503 (provider unavailable). Tries each model in order until
- * one succeeds. All route through OpenRouter — free tier only.
+ * limit), 503 (provider unavailable), or 404 (model removed/no free tier).
+ * Tries each model in order until one succeeds. All route through OpenRouter.
  */
 const LLM_FALLBACK_CHAIN: string[] = [
-  "minimax/minimax-m2.5:free",
+  "google/gemma-4-31b-it:free",
   "meta-llama/llama-3.3-70b-instruct:free",
   "nousresearch/hermes-3-llama-3.1-405b:free",
+  "qwen/qwen3-next-80b-a3b-instruct:free",
 ];
 
 interface ChatMessage {
@@ -92,6 +93,15 @@ export interface SunoLlmContext {
   hints?: Record<string, unknown>;
   /** Mood preset ID — when set, Uriel uses the preset's basePrompt + brainwave stack as foundation. */
   moodPresetId?: string;
+  /** Populated after an architect-prompt run — gives Jophiel brainwave/label/useCase context. */
+  architectData?: {
+    brainwave: string;
+    bpm: number;
+    label: string;
+    useCase: string;
+    arc: string;
+    styles: string;
+  };
 }
 
 /**
@@ -136,7 +146,7 @@ export async function callOpenRouter(opts: OpenRouterCallOpts): Promise<string> 
       return await callOpenRouterOnce({ ...opts, model: m }, orKey);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const retryable = /\b(429|503|502|504|402|insufficient|rate.limit)\b/i.test(msg);
+      const retryable = /\b(404|429|503|502|504|402|insufficient|rate.limit|unavailable)\b/i.test(msg);
       if (!retryable) throw err;
       lastErr = err;
       logger.warn(
@@ -392,6 +402,15 @@ The output is fed directly to an image-gen API (Gemini Image / SDXL).`,
         `Genre: ${ctx.genre ?? "open"}`,
         ctx.soundPrompt
           ? `Sonic palette (for visual matching):\n${ctx.soundPrompt.slice(0, 800)}`
+          : null,
+        ctx.architectData
+          ? `Brainwave state: ${ctx.architectData.brainwave} | ${ctx.architectData.bpm} BPM | Arc: ${ctx.architectData.arc}`
+          : null,
+        ctx.architectData?.styles
+          ? `Sonic field: ${ctx.architectData.styles.slice(0, 200)}`
+          : null,
+        ctx.architectData?.label || ctx.architectData?.useCase
+          ? `Thematic anchor: ${ctx.architectData.label} — ${ctx.architectData.useCase}`
           : null,
         "",
         "Write the cover-art prompt now. Anchor it in the Hermes/alchemical visual vocabulary above. Albedo palette only.",
