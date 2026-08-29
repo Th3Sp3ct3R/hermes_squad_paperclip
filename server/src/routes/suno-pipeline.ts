@@ -24,7 +24,7 @@
  */
 import { Router, type Request } from "express";
 import { z } from "zod";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   sunoIssues,
@@ -695,6 +695,23 @@ export function sunoPipelineRoutes(db: Db) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[suno-pipeline] GET failed:", err);
+      throw err;
+    }
+  });
+
+  // Scheduled queue — must be before generic /suno-pipeline/:id routes would shadow
+  router.get("/suno-pipeline/scheduled", async (req, res) => {
+    try {
+      const companyId = resolveCompanyId(req);
+      assertCompanyAccess(req, companyId);
+      const rows = await db
+        .select()
+        .from(sunoIssues)
+        .where(and(eq(sunoIssues.companyId, companyId), eq(sunoIssues.status, "APPROVED"), isNotNull(sunoIssues.scheduledPublishAt)))
+        .orderBy(asc(sunoIssues.scheduledPublishAt));
+      res.json(rows);
+    } catch (err) {
+      console.error("[suno-pipeline] GET scheduled failed:", err);
       throw err;
     }
   });
@@ -1418,13 +1435,16 @@ export function sunoPipelineRoutes(db: Db) {
 
   // ── POST /:id/publish ─────────────────────────────────────────────────────
   // Sandalphon moves APPROVED → PUBLISHED. Locked to Sandalphon by agent name.
+  // Also handles scheduled publish: caller may be system scheduler (actor.type===system).
   router.post("/suno-pipeline/:id/publish", validate(transitionSchema), async (req, res) => {
     const id = paramId(req);
     const body = req.body as z.infer<typeof transitionSchema>;
     assertCompanyAccess(req, body.companyId);
 
     const agentName = await resolveActorAgentName(db, req);
-    if (req.actor.type === "agent" && agentName !== "Sandalphon") {
+    // System scheduler bypasses Sandalphon lock — it publishes on behalf of the schedule
+    const isSystem = (req.actor as unknown as { type: string }).type === "system";
+    if (!isSystem && req.actor.type === "agent" && agentName !== "Sandalphon") {
       throw forbidden(
         `Only Sandalphon can publish Suno issues (calling agent: ${agentName ?? "unknown"})`,
       );
@@ -1433,9 +1453,10 @@ export function sunoPipelineRoutes(db: Db) {
     const existing = await loadIssueOrThrow(id, body.companyId);
     assertTransition(existing.status as SunoStatus, "PUBLISHED", ["APPROVED"]);
 
+    const now = new Date();
     const [row] = await db
       .update(sunoIssues)
-      .set({ status: "PUBLISHED", updatedAt: new Date() })
+      .set({ status: "PUBLISHED", publishedAt: now, scheduledPublishAt: null, updatedAt: now })
       .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
       .returning();
     if (!row) throw notFound("Suno issue not found");
@@ -1452,7 +1473,126 @@ export function sunoPipelineRoutes(db: Db) {
       action: "suno_issue.published",
       entityType: "suno_issue",
       entityId: row.id,
-      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null },
+      details: { previousStatus: existing.status, newStatus: row.status, note: body.note ?? null, scheduled: existing.scheduledPublishAt != null },
+    });
+
+    // bridge → engager (fail-open)
+    try {
+      const { notifyEngagerOnPublish } = await import("../services/suno-engager-webhook.js");
+      await notifyEngagerOnPublish({
+        event: "suno_issue.published",
+        at: now.toISOString(),
+        companyId: body.companyId,
+        sunoIssueId: row.id,
+        audioUrl: row.audioUrl,
+        thumbnailUrl: row.thumbnailUrl,
+        videoUrl: row.videoUrl,
+        minimaxAudioUrl: row.minimaxAudioUrl,
+        canonAudioVariant: row.canonAudioVariant,
+        targetChakra: row.targetChakra,
+        targetFrequency: row.targetFrequency,
+        genre: row.genre,
+        concept: row.concept,
+        scheduled: existing.scheduledPublishAt != null,
+        publishTargets: row.publishTargets as unknown as string[] | null,
+      });
+    } catch {
+      // webhook optional
+    }
+
+    res.json(row);
+  });
+
+  // ── POST /:id/schedule ─────────────────────────────────────────────────────
+  // Set or reschedule publish time. Issue must be APPROVED. The scheduler ticker
+  // will auto-publish when due. Can also be called on an already-scheduled issue to move it.
+  const scheduleSchema = z.object({
+    companyId: z.string().uuid(),
+    scheduledPublishAt: z.string().min(1), // ISO 8601
+    publishTargets: z.array(z.string().min(1).max(40)).max(10).optional(),
+    note: z.string().max(2000).optional(),
+  });
+  router.post("/suno-pipeline/:id/schedule", validate(scheduleSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof scheduleSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (existing.status !== "APPROVED") {
+      throw unprocessable(`Only APPROVED issues can be scheduled (current=${existing.status}). Approve first.`);
+    }
+
+    const when = new Date(body.scheduledPublishAt);
+    if (isNaN(when.getTime())) throw unprocessable("scheduledPublishAt must be a valid ISO 8601 datetime");
+    if (when.getTime() <= Date.now()) throw unprocessable("scheduledPublishAt must be in the future");
+    // guard: require audio + cover exist before scheduling distribution
+    if (!existing.audioUrl && !existing.minimaxAudioUrl) {
+      throw unprocessable("Cannot schedule: no audioUrl or minimaxAudioUrl yet");
+    }
+    const needCover = !existing.thumbnailUrl;
+    if (needCover) {
+      throw unprocessable("Cannot schedule: thumbnailUrl missing — generate cover art first");
+    }
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({
+        scheduledPublishAt: when,
+        publishTargets: body.publishTargets ?? existing.publishTargets ?? null,
+        updatedAt: new Date(),
+        metadata: sql`jsonb_set(
+          COALESCE(${sunoIssues.metadata}, '{}'),
+          '{schedule}',
+          ${JSON.stringify({ scheduledPublishAt: when.toISOString(), publishTargets: body.publishTargets ?? null, note: body.note ?? null, at: new Date().toISOString() })}::jsonb
+        )`,
+      } as unknown as Record<string, unknown>)
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.scheduled",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { scheduledPublishAt: when.toISOString(), publishTargets: body.publishTargets ?? null, note: body.note ?? null },
+    });
+
+    res.json(row);
+  });
+
+  // ── POST /:id/unschedule ───────────────────────────────────────────────────
+  router.post("/suno-pipeline/:id/unschedule", validate(transitionSchema), async (req, res) => {
+    const id = paramId(req);
+    const body = req.body as z.infer<typeof transitionSchema>;
+    assertCompanyAccess(req, body.companyId);
+
+    const existing = await loadIssueOrThrow(id, body.companyId);
+    if (!existing.scheduledPublishAt) throw unprocessable("Issue is not scheduled");
+
+    const [row] = await db
+      .update(sunoIssues)
+      .set({ scheduledPublishAt: null, updatedAt: new Date() } as unknown as Record<string, unknown>)
+      .where(and(eq(sunoIssues.id, id), eq(sunoIssues.companyId, body.companyId)))
+      .returning();
+    if (!row) throw notFound("Suno issue not found");
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: body.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "suno_issue.unscheduled",
+      entityType: "suno_issue",
+      entityId: row.id,
+      details: { previousScheduledAt: (existing.scheduledPublishAt as Date)?.toISOString?.() ?? String(existing.scheduledPublishAt) },
     });
 
     res.json(row);

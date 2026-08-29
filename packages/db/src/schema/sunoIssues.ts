@@ -120,6 +120,14 @@ export const sunoIssues = pgTable(
     /** One of SUNO_STATUSES. Defaults to DRAFT. */
     status: text("status").notNull().default("DRAFT"),
 
+    /** When set while APPROVED, auto-publish ticker will flip to PUBLISHED at this time. */
+    scheduledPublishAt: timestamp("scheduled_publish_at", { withTimezone: true }),
+    /** When the issue actually transitioned to PUBLISHED (manual or scheduled). */
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+
+    /** Future publish targets (e.g. ["internal","youtube","tiktok"]) — reserved for distribution adapters. */
+    publishTargets: jsonb("publish_targets").$type<string[] | null>(),
+
     /** Pipeline stage tracking, lyric drafts, Suno raw responses, etc. */
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
 
@@ -138,6 +146,13 @@ export const sunoIssues = pgTable(
     companyCreatedIdx: index("suno_issues_company_created_idx").on(
       table.companyId,
       table.createdAt,
+    ),
+    scheduledPublishIdx: index("suno_issues_scheduled_publish_at_idx").on(
+      table.scheduledPublishAt,
+    ),
+    companyScheduledIdx: index("suno_issues_company_scheduled_idx").on(
+      table.companyId,
+      table.scheduledPublishAt,
     ),
   }),
 );
